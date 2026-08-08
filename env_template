@@ -1,0 +1,43 @@
+########################################################################
+#   ai-api-unified-http — service configuration
+#   Copy this file to .env and fill in only the providers you use.
+#   .env is gitignored; never commit real keys.
+#   Variable names are identical to the ai-api-unified library's so a
+#   .env that works for the library works here unchanged.
+########################################################################
+
+# --- Service ---
+# Bind address and port for uvicorn (used by the run command in the README).
+HTTP_HOST=0.0.0.0
+HTTP_PORT=8080
+# Python log level for the service and the library's observability events.
+LOG_LEVEL=INFO
+
+# --- Provider credentials (fill in what you use; leave the rest blank) ---
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GOOGLE_GEMINI_API_KEY=
+GOOGLE_AUTH_METHOD=api_key
+
+# --- Engine defaults (per-request values override these) ---
+# Completions engine (openai | openai-responses | claude | google-gemini)
+COMPLETIONS_ENGINE=google-gemini
+# Embedding engine (openai | google-gemini | voyage)
+EMBEDDING_ENGINE=google-gemini
+
+# Completions model name, by engine. Leave unset to use the engine default
+# (one generation behind the newest catalogued model):
+#   openai:        default gpt-5.4-mini    | gpt-5.5 | gpt-5.4 | gpt-5.4-nano | gpt-4o-mini
+#   claude:        default claude-opus-4-8 | claude-opus-5 | claude-sonnet-5 | claude-fable-5 | claude-haiku-4-5
+#   google-gemini: default gemini-3.5-flash | gemini-3.6-flash | gemini-3.5-flash-lite | gemini-3.1-pro-preview | gemini-2.5-flash
+COMPLETIONS_MODEL_NAME=
+EMBEDDING_MODEL_NAME=gemini-embedding-001
+
+# --- Library middleware (optional) ---
+# Path to the ai-api-unified middleware YAML controlling observability and
+# PII redaction for every call this service makes. This file is the single
+# control point for all web apps behind the service.
+# AI_MIDDLEWARE_CONFIG_PATH=config/middleware.yaml
+
+# Escalate deprecated-model use to a hard error (recommended in CI).
+# AI_STRICT_DEPRECATIONS=1

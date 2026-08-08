@@ -1,0 +1,23 @@
+# Local configuration and secrets — never commit. Copy env_template to .env
+# per the README; provider keys live only in the untracked .env.
+.env
+.env.*
+!.env.example
+*.local.json
+credentials/
+*.pem
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]*.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
