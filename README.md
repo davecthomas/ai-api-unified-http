@@ -1,13 +1,13 @@
-# ai-api-unified-http 0.5.0
+# ai-api-unified-http 0.6.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One
 implementation of provider logic, pricing, model lifecycle, and middleware —
 exposed over REST, with TypeScript clients generated from the OpenAPI spec.
 
-Status: **in progress**. `POST /v1/completions` is live, buffered and
-streaming; the remaining model-invoking endpoints still return
-`501 Not Implemented`. `GET /healthz` is live.
+Status: **in progress**. `/v1/completions` (buffered and streaming),
+`/v1/structured`, and `/v1/conversations/turn` are live. `/v1/embeddings`,
+`/v1/tokens/count`, and `/v1/models` still return `501 Not Implemented`.
 See [docs/requirements.md](docs/requirements.md) for scope and
 [docs/technical-design.md](docs/technical-design.md) for the architecture and
 the endpoint-to-library mapping.
@@ -134,8 +134,8 @@ Then:
 | Method | Path | Purpose | Status |
 |---|---|---|---|
 | POST | `/v1/completions` | Text completion; `"stream": true` for SSE | **live** |
-| POST | `/v1/structured` | Schema-validated structured output | 501 |
-| POST | `/v1/conversations/turn` | One stateless tool-capable conversation turn | 501 |
+| POST | `/v1/structured` | Schema-validated structured output | **live** |
+| POST | `/v1/conversations/turn` | One stateless tool-capable conversation turn | **live** |
 | POST | `/v1/embeddings` | Embedding vectors | 501 |
 | POST | `/v1/tokens/count` | Provider-side token count | 501 |
 | GET | `/v1/models` | Model catalog: capabilities, pricing, lifecycle | 501 |
@@ -143,6 +143,30 @@ Then:
 
 Every `/v1` path requires a bearer token; `/healthz` and the OpenAPI documents
 do not.
+
+### Conversations are stateless
+
+The service holds no conversation state. Each turn carries the full history,
+and the caller executes any tools the model asks for — the service never runs
+one. A turn response includes `conversation_token`. Replay it on the next turn by
+placing it as the content of an assistant message, in the position that turn
+occurred:
+
+```json
+{"messages": [
+  {"role": "user", "content": "first question"},
+  {"role": "assistant", "content": "v1.W3siY2l0YXR..."},
+  {"role": "user", "content": "follow up"}
+]}
+```
+
+Ordering is yours, because only you know where a new user message belongs
+relative to the previous assistant turn. Echo the token **without parsing
+it**. It carries
+provider-specific content whose shape changes with the engine and the library
+version, so reading it would turn a provider's internal representation into
+this service's contract. A token from an older service version is rejected
+with a 400 telling you to start a new conversation.
 
 ## Versioning
 

@@ -22,14 +22,6 @@ def test_healthz_reports_versions(client: TestClient) -> None:
 
 
 SCAFFOLDED_POST_ENDPOINTS: list[tuple[str, dict]] = [
-    (
-        "/v1/structured",
-        {"engine": "openai", "prompt": "hi", "response_schema": {"type": "object"}},
-    ),
-    (
-        "/v1/conversations/turn",
-        {"engine": "claude", "system_prompt": "s", "messages": []},
-    ),
     ("/v1/embeddings", {"engine": "google-gemini", "inputs": ["hi"]}),
     ("/v1/tokens/count", {"engine": "claude", "prompt": "hi"}),
 ]
