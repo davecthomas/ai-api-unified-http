@@ -38,6 +38,22 @@ class CompletionRequest(EngineSelection):
     )
 
 
+class CompletionResponse(BaseModel):
+    """Buffered completion result.
+
+    Text only, because `asend_prompt` returns a bare `str`. Token usage and a
+    finish reason would require routing this through the conversation call
+    instead, which is a different provider path than the endpoint documents.
+    `/v1/conversations/turn` and `/v1/structured` return both natively.
+    """
+
+    text: str = Field(description="Generated completion text.")
+    engine: str = Field(description="Engine that served the request.")
+    model: str | None = Field(
+        default=None, description="Model requested, or null for the engine default."
+    )
+
+
 class StructuredRequest(EngineSelection):
     prompt: str | None = None
     messages: list[dict[str, Any]] | None = None

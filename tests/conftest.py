@@ -23,6 +23,8 @@ from ai_api_unified_http.app import create_app
 
 TEST_API_KEY: str = "test-suite-key"
 
+REPO_ROOT: Path = Path(__file__).resolve().parent.parent
+
 
 @pytest.fixture(autouse=True)
 def service_env(
@@ -35,6 +37,13 @@ def service_env(
     """
     monkeypatch.setenv(auth.API_KEYS_ENV, f"tests:{TEST_API_KEY}")
     monkeypatch.delenv(auth.AUTH_DISABLED_ENV, raising=False)
+
+    # Set explicitly rather than letting startup fill it in. apply_default_
+    # middleware_config writes to os.environ, which outlives the test that
+    # triggered it, so leaving it unset made results depend on test order.
+    monkeypatch.setenv(
+        cost.MIDDLEWARE_CONFIG_PATH_ENV, str(REPO_ROOT / "config" / "middleware.yaml")
+    )
 
     topic: str = f"test.{request.node.name}"
     monkeypatch.setenv(cost.COST_TOPIC_ENV, topic)

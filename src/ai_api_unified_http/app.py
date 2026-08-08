@@ -18,7 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .__version__ import __version__ as service_version
 from .auth import ApiKeyAuthMiddleware, verify_auth_configured
-from .cost import attach_cost_handler, verify_cost_capture
+from .cost import (
+    apply_default_middleware_config,
+    attach_cost_handler,
+    verify_cost_capture,
+)
 from .errors import EXCEPTION_HANDLERS
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
@@ -50,6 +54,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     library's `emit_cost_topic` without telling the service, where capture
     would attach to a topic nothing publishes to.
     """
+    # The middleware profile has to be resolved first: it decides both whether
+    # the library emits cost events and which topic it publishes them on.
+    apply_default_middleware_config()
     attach_cost_handler()
     verify_cost_capture()
     verify_auth_configured()

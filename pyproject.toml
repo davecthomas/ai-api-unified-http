@@ -1,14 +1,20 @@
 [project]
 name = "ai_api_unified_http"
 
-version = "0.3.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
+version = "0.4.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
 description = "HTTP service exposing ai-api-unified to non-Python apps"
 authors = [{ name = "Dave Thomas", email = "davidcthomas@gmail.com" }]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "ai-api-unified (==2.22.0)",
+    # Provider SDKs are optional extras of the library. The service is a
+    # deployed unit rather than a library, so it installs the engines
+    # env_template documents; without them every call fails at client
+    # construction with "requires optional extra". middleware-pii-redaction is
+    # required by hard requirement 2, which puts every call through the
+    # library's redaction and observability middleware.
+    "ai-api-unified[anthropic,google-gemini,middleware-pii-redaction,openai] (==2.22.0)",
     "fastapi (>=0.115,<1.0)",
     "uvicorn[standard] (>=0.30,<1.0)",
 ]

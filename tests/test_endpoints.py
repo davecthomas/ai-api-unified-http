@@ -22,7 +22,6 @@ def test_healthz_reports_versions(client: TestClient) -> None:
 
 
 SCAFFOLDED_POST_ENDPOINTS: list[tuple[str, dict]] = [
-    ("/v1/completions", {"engine": "claude", "prompt": "hi"}),
     (
         "/v1/structured",
         {"engine": "openai", "prompt": "hi", "response_schema": {"type": "object"}},
@@ -51,9 +50,9 @@ def test_models_returns_501(client: TestClient) -> None:
     assert response.json()["error"] == "not_implemented"
 
 
-def test_invalid_body_is_422_not_501(client: TestClient) -> None:
-    # Schema validation runs before the 501 stub, so the OpenAPI request
-    # shapes are enforced from day one.
+def test_invalid_body_is_422(client: TestClient) -> None:
+    # Schema validation runs before any handler, so the OpenAPI request
+    # shapes are enforced regardless of whether the route is live.
     response = client.post("/v1/completions", json={"prompt": "no engine"})
     assert response.status_code == 422
 

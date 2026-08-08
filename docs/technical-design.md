@@ -109,6 +109,42 @@ string token in the turn response; clients store and echo it untouched. The
 token's encoding is a service implementation detail and may change between
 service versions — clients must never parse it.
 
+## Middleware profile, and the streaming/redaction conflict
+
+The library reads one process-wide middleware YAML from
+`AI_MIDDLEWARE_CONFIG_PATH`. The service ships two, and defaults the variable
+to the first when it is unset:
+
+| Profile | PII redaction | Streaming | Used by |
+|---|---|---|---|
+| `config/middleware.yaml` | on | **unavailable** | deployments (the default) |
+| `config/middleware.dev.yaml` | off | works | `make serve`, `make all` |
+
+Two documented rules collide here, and live testing is what surfaced it:
+
+- Hard requirement 2 puts *every* call through PII redaction.
+- The inherited constraints say the streaming endpoint is unredacted and
+  callers needing redaction use the buffered one — which presumes streaming
+  runs.
+
+The library refuses to do both. With redaction enabled it raises
+`AiProviderCapabilityUnsupportedError` on any streaming call:
+
+> Streaming completions are unavailable while PII redaction middleware is
+> enabled: redaction cannot be guaranteed across stream chunk boundaries.
+
+Because the profile is process-wide, one deployment gets redaction or
+streaming, never both, and no per-call override exists in the library. The
+resolution: the production default keeps redaction, so hard requirement 2
+holds and streaming returns a mapped 400 carrying the library's own
+explanation. The dev profile drops redaction so the harness can exercise the
+streaming path.
+
+A deployment that needs both is blocked on upstream library work — per-call
+middleware selection, or redaction that buffers chunk boundaries. Until then
+the choice belongs to whoever configures the deployment, which is why it is a
+profile rather than a code path.
+
 ## Cost-event capture
 
 The library emits one structured log record per call (event type

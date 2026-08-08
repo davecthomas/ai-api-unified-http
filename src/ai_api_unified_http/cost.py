@@ -25,10 +25,22 @@ import os
 from pathlib import Path
 from typing import Any, Final
 
-# The library's default cost topic. Deployments that retune the library's
-# emit_cost_topic set HTTP_COST_TOPIC to match, or capture silently misses.
+from ai_api_unified.middleware import MiddlewareConfig
+
+# The library's default cost topic, used when its middleware profile does not
+# override `emit_cost_topic`.
 DEFAULT_COST_TOPIC: Final[str] = "ai_api_unified.observability.cost"
+
+# Escape hatch for a deployment whose topic the service cannot resolve. The
+# resolved library setting wins when both are present, because it is the one
+# the library actually publishes on.
 COST_TOPIC_ENV: Final[str] = "HTTP_COST_TOPIC"
+
+# The middleware profile this service ships. The library reads it from
+# AI_MIDDLEWARE_CONFIG_PATH; the service defaults that variable to this file so
+# a stock deployment starts with cost emission and PII redaction already on.
+MIDDLEWARE_CONFIG_PATH_ENV: Final[str] = "AI_MIDDLEWARE_CONFIG_PATH"
+DEFAULT_MIDDLEWARE_CONFIG_PATH: Final[str] = "config/middleware.yaml"
 
 # Bootstrap sink. Expected to become a metrics pipeline, which is a handler
 # swap rather than a change to how capture works.
@@ -41,7 +53,84 @@ logger: Final[logging.Logger] = logging.getLogger(__name__)
 
 
 class CostEventNotCapturedError(RuntimeError):
-    """Raised at startup when the cost topic has no handler attached."""
+    """Raised at startup when cost events would not be recorded.
+
+    Covers both halves of the failure: nothing listening on the topic, and the
+    library not emitting on it in the first place.
+    """
+
+
+def apply_default_middleware_config() -> None:
+    """Point the library at this service's middleware profile when unset.
+
+    Called before anything reads the library's configuration. A deployment
+    that supplies its own profile keeps it; the default exists so a stock
+    install starts with cost emission and PII redaction already on.
+    """
+    if os.environ.get(MIDDLEWARE_CONFIG_PATH_ENV):
+        return
+    default: Path = Path(DEFAULT_MIDDLEWARE_CONFIG_PATH)
+    if not default.exists():
+        logger.warning(
+            "%s is unset and %s is missing; the library will run with its "
+            "built-in middleware defaults, which do not emit cost events",
+            MIDDLEWARE_CONFIG_PATH_ENV,
+            default,
+        )
+        return
+    os.environ[MIDDLEWARE_CONFIG_PATH_ENV] = str(default)
+    logger.info("middleware profile -> %s", default)
+
+
+def _resolved_observability_settings() -> Any | None:
+    """Return the library's resolved observability settings, or None when off."""
+    return MiddlewareConfig().get_observability_settings()
+
+
+# Attribute names the logging module puts on every record. Taken from an
+# instance, because LogRecord.__dict__ on the class holds methods rather than
+# the per-record attributes, and filtering against it lets `pathname`,
+# `lineno`, `thread`, and the rest through into the sink.
+_LOG_RECORD_ATTRIBUTES: Final[frozenset[str]] = frozenset(
+    logging.LogRecord("", 0, "", 0, "", None, None).__dict__.keys()
+) | {"message", "asctime", "taskName"}
+
+
+def _structured_fields(record: logging.LogRecord) -> dict[str, Any]:
+    """Extract the library's cost fields from a log record.
+
+    The library logs the event as `"%s %s"` with args `(event_name, payload)`,
+    so the structured data lives in the args tuple rather than on the record.
+    Both shapes are read: the args payload, and any `extra=` attributes, so a
+    change on either side still lands in the sink.
+
+    Args:
+        record: The cost event record.
+
+    Returns:
+        dict[str, Any]: Event name plus every structured field found.
+    """
+    fields: dict[str, Any] = {}
+
+    args: Any = record.args
+    if isinstance(args, (tuple, list)):
+        for item in args:
+            if isinstance(item, dict):
+                fields.update(item)
+            elif isinstance(item, str) and "event" not in fields:
+                fields["event"] = item
+    elif isinstance(args, dict):
+        fields.update(args)
+
+    # Anything attached via extra=, which is where a future library version
+    # might put fields instead.
+    for key, value in record.__dict__.items():
+        if key not in _LOG_RECORD_ATTRIBUTES and key not in fields:
+            fields[key] = value
+
+    if "event" not in fields:
+        fields["event"] = record.getMessage()
+    return fields
 
 
 class JsonLinesCostHandler(logging.Handler):
@@ -74,15 +163,8 @@ class JsonLinesCostHandler(logging.Handler):
                 "timestamp": record.created,
                 "level": record.levelname,
                 "logger": record.name,
-                "message": record.getMessage(),
             }
-            # The library attaches its structured fields to the record; carry
-            # every non-standard attribute through rather than naming them,
-            # so new library fields survive without a change here.
-            standard: frozenset[str] = frozenset(logging.LogRecord.__dict__.keys())
-            for key, value in record.__dict__.items():
-                if key not in standard and key not in payload:
-                    payload[key] = value
+            payload.update(_structured_fields(record))
             with self.path.open("a", encoding="utf-8") as sink:
                 sink.write(json.dumps(payload, default=str) + "\n")
         except Exception:  # noqa: BLE001 - logging must never raise into callers
@@ -90,7 +172,15 @@ class JsonLinesCostHandler(logging.Handler):
 
 
 def cost_topic() -> str:
-    """Return the logger name the library emits cost events on."""
+    """Return the logger name the library emits cost events on.
+
+    Resolved from the library's own middleware profile first, so the service
+    listens where the library actually publishes. An explicit `HTTP_COST_TOPIC`
+    is the fallback for a deployment whose profile the service cannot read.
+    """
+    settings = _resolved_observability_settings()
+    if settings is not None and settings.emit_cost_topic:
+        return str(settings.emit_cost_topic)
     return os.environ.get(COST_TOPIC_ENV, DEFAULT_COST_TOPIC)
 
 
@@ -119,12 +209,36 @@ def attach_cost_handler() -> logging.Handler | None:
 
 
 def verify_cost_capture() -> None:
-    """Fail when nothing is listening on the cost topic.
+    """Fail when cost events would not be recorded.
+
+    Two independent things must hold, and checking only one of them is how
+    this service shipped a startup gate that passed while recording nothing:
+
+    1. The library must be emitting cost events. `emit_cost` defaults to
+       **false**, so a deployment with no middleware profile publishes nothing
+       and a handler waits on a silent topic.
+    2. Something must be listening on the topic it publishes to.
 
     Raises:
-        CostEventNotCapturedError: When the topic has no handler, so every
-            cost event the service produces would be discarded.
+        CostEventNotCapturedError: When either half fails.
     """
+    settings = _resolved_observability_settings()
+    if settings is None:
+        raise CostEventNotCapturedError(
+            f"The library's observability middleware is disabled, so no cost "
+            f"events are emitted at all. Point {MIDDLEWARE_CONFIG_PATH_ENV} at "
+            f"a profile with an enabled 'observability' entry; this service "
+            f"ships one at {DEFAULT_MIDDLEWARE_CONFIG_PATH}."
+        )
+    if not settings.emit_cost:
+        raise CostEventNotCapturedError(
+            f"The library's observability middleware is enabled but "
+            f"emit_cost is false, which is its default, so no cost events are "
+            f"produced. Set 'emit_cost: true' under the observability entry in "
+            f"the profile at "
+            f"{os.environ.get(MIDDLEWARE_CONFIG_PATH_ENV, DEFAULT_MIDDLEWARE_CONFIG_PATH)}."
+        )
+
     topic: str = cost_topic()
     topic_logger: logging.Logger = logging.getLogger(topic)
     if topic_logger.handlers:
@@ -132,6 +246,5 @@ def verify_cost_capture() -> None:
     raise CostEventNotCapturedError(
         f"No handler is attached to the cost topic {topic!r}, so every cost "
         f"event this service produces would be dropped. Set {COST_LOG_PATH_ENV} "
-        f"to a writable path, or {COST_TOPIC_ENV} if the library's "
-        f"emit_cost_topic was retuned."
+        f"to a writable path."
     )
