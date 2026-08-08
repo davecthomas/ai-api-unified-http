@@ -17,6 +17,16 @@ LOG_LEVEL=INFO
 # test web app (make webapp); deployments set their real web app origins.
 # HTTP_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
+# --- Cost-event capture (required; the service refuses to start without it) ---
+# Every provider call emits a cost event. The service attaches a handler to
+# the library's cost topic at startup and fails loudly if nothing is listening,
+# because a dropped event is spend with no record of who incurred it.
+# Sink file for cost events, one JSON object per line. Parent dirs are created.
+# HTTP_COST_LOG_PATH=cost-events.jsonl
+# Logger the library emits cost events on. Set this only if the library's
+# emit_cost_topic was retuned; otherwise capture attaches to a silent topic.
+# HTTP_COST_TOPIC=ai_api_unified.observability.cost
+
 # --- Provider credentials (fill in what you use; leave the rest blank) ---
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=

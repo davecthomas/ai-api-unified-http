@@ -1,4 +1,4 @@
-# ai-api-unified-http 0.2.0
+# ai-api-unified-http 0.2.1
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One
@@ -26,6 +26,24 @@ cp env_template .env
 Variable names in `.env` are identical to the ai-api-unified library's, so a
 `.env` that works for the library works here unchanged. See the comments in
 [`env_template`](env_template) for every supported variable.
+
+### Cost-event capture
+
+Every provider call emits a cost event carrying its own cost attribution, and
+the service records it. It attaches a handler to the library's cost topic at
+startup and **refuses to start when nothing is listening**, because an event
+that goes nowhere is spend with no record of who incurred it.
+
+The defaults work with no configuration: events land in `cost-events.jsonl`
+(gitignored) as one JSON object per line. Set `HTTP_COST_LOG_PATH` to move the
+sink, and `HTTP_COST_TOPIC` only if the library's `emit_cost_topic` was
+retuned — otherwise capture attaches to a topic nothing publishes to.
+
+Startup failure looks like this, and names the fix:
+
+```
+CostEventNotCapturedError: No handler is attached to the cost topic ...
+```
 
 ## Run
 

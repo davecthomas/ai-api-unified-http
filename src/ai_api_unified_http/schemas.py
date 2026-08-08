@@ -89,6 +89,26 @@ class NotImplementedResponse(BaseModel):
     detail: str = "Planned for a future release; see docs/requirements.md."
 
 
+class ErrorResponse(BaseModel):
+    """Uniform failure body for every error the service maps from the library.
+
+    `provider_status` is the provider's own HTTP status when one was reported.
+    It is present for diagnosis and never equals the status of this response:
+    a provider 500 surfaces as a 502 here, and a provider 401 as a 502 too,
+    since callers hold no provider credentials.
+    """
+
+    error: str = Field(description="Machine-readable error code.")
+    detail: str = Field(description="Human-readable cause.")
+    engine: str | None = Field(
+        default=None, description="Engine token that failed, when known."
+    )
+    provider_status: int | None = Field(
+        default=None,
+        description="HTTP status reported by the provider, when one was reported.",
+    )
+
+
 class HealthResponse(BaseModel):
     status: str
     service_version: str

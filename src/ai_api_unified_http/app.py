@@ -9,12 +9,16 @@ Run locally with:
 """
 
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from ai_api_unified.__version__ import __version__ as library_version
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .__version__ import __version__ as service_version
+from .cost import attach_cost_handler, verify_cost_capture
+from .errors import EXCEPTION_HANDLERS
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
 
@@ -32,6 +36,20 @@ def _cors_origins() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Attach cost capture before serving, and refuse to serve without it.
+
+    Startup order matters: the handler is attached first, then verified. The
+    verification is not a formality about our own handler — it also catches a
+    deployment that retuned the library's `emit_cost_topic` without telling the
+    service, where capture would attach to a topic nothing publishes to.
+    """
+    attach_cost_handler()
+    verify_cost_capture()
+    yield
+
+
 def create_app() -> FastAPI:
     """Build the FastAPI app with the v1 router and health endpoint."""
     app = FastAPI(
@@ -42,7 +60,10 @@ def create_app() -> FastAPI:
             "Breaking API changes bump the URI version (/v1 -> /v2); the "
             "service itself follows semantic versioning independently."
         ),
+        lifespan=lifespan,
     )
+    for exception_type, handler in EXCEPTION_HANDLERS:
+        app.add_exception_handler(exception_type, handler)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),
