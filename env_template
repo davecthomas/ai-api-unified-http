@@ -7,7 +7,8 @@
 ########################################################################
 
 # --- Service ---
-# Bind address and port for uvicorn (used by the run command in the README).
+# Reserved for the deployment entrypoint; the app does not read these yet.
+# The README dev command passes --port explicitly.
 HTTP_HOST=0.0.0.0
 HTTP_PORT=8080
 # Python log level for the service and the library's observability events.
