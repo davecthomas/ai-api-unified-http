@@ -8,6 +8,7 @@ start rather than serve traffic that silently loses cost events.
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -33,16 +34,93 @@ def isolated_topic(
     logging.getLogger(topic).handlers.clear()
 
 
-def test_verify_fails_when_nothing_is_listening() -> None:
-    with pytest.raises(cost.CostEventNotCapturedError) as caught:
+def _write_profile(tmp_path: Path, *, observability: bool, emit_cost: bool) -> str:
+    """Write a middleware profile and return its path."""
+    entries: list[str] = []
+    if observability:
+        entries.append(
+            "  - name: observability\n"
+            "    enabled: true\n"
+            "    settings:\n"
+            f"      emit_cost: {str(emit_cost).lower()}\n"
+        )
+    body = "middleware:\n" + ("".join(entries) if entries else "  []\n")
+    path = tmp_path / "middleware.yaml"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+class TestVerifyCostCapture:
+    """Both halves must hold: the library must emit, and something must listen.
+
+    Checking only the listener is how this service shipped a startup gate that
+    passed while recording nothing, because the library's emit_cost defaults
+    to false.
+    """
+
+    def test_fails_when_observability_middleware_is_off(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv(
+            cost.MIDDLEWARE_CONFIG_PATH_ENV,
+            _write_profile(tmp_path, observability=False, emit_cost=False),
+        )
+        cost.attach_cost_handler()
+        with pytest.raises(cost.CostEventNotCapturedError) as caught:
+            cost.verify_cost_capture()
+        assert "observability" in str(caught.value)
+
+    def test_fails_when_emit_cost_is_off(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The library default. A handler is attached and listening, and still
+        # nothing is ever recorded.
+        monkeypatch.setenv(
+            cost.MIDDLEWARE_CONFIG_PATH_ENV,
+            _write_profile(tmp_path, observability=True, emit_cost=False),
+        )
+        cost.attach_cost_handler()
+        with pytest.raises(cost.CostEventNotCapturedError) as caught:
+            cost.verify_cost_capture()
+        assert "emit_cost" in str(caught.value)
+
+    def test_fails_when_nothing_is_listening(self) -> None:
+        # Profile is fine (conftest points at the shipped one); no handler.
+        with pytest.raises(cost.CostEventNotCapturedError) as caught:
+            cost.verify_cost_capture()
+        assert cost.COST_LOG_PATH_ENV in str(caught.value)
+
+    def test_passes_when_the_library_emits_and_a_handler_listens(self) -> None:
+        cost.attach_cost_handler()
         cost.verify_cost_capture()
-    # The message must name the fix, not just the fault.
-    assert cost.COST_LOG_PATH_ENV in str(caught.value)
+
+    def test_shipped_profile_enables_cost_emission(self) -> None:
+        # Guards the config file itself: if config/middleware.yaml ever loses
+        # emit_cost, this fails rather than the service silently under-recording.
+        settings = cost._resolved_observability_settings()
+        assert settings is not None
+        assert settings.emit_cost is True
 
 
-def test_attach_then_verify_succeeds() -> None:
-    cost.attach_cost_handler()
-    cost.verify_cost_capture()
+class TestMiddlewareDefault:
+    def test_default_is_applied_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(cost.MIDDLEWARE_CONFIG_PATH_ENV, raising=False)
+        monkeypatch.chdir(Path(__file__).resolve().parent.parent)
+        cost.apply_default_middleware_config()
+        assert (
+            cost.DEFAULT_MIDDLEWARE_CONFIG_PATH
+            in os.environ[cost.MIDDLEWARE_CONFIG_PATH_ENV]
+        )
+
+    def test_an_operator_supplied_profile_is_not_overridden(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        chosen = _write_profile(tmp_path, observability=True, emit_cost=True)
+        monkeypatch.setenv(cost.MIDDLEWARE_CONFIG_PATH_ENV, chosen)
+        cost.apply_default_middleware_config()
+        assert os.environ[cost.MIDDLEWARE_CONFIG_PATH_ENV] == chosen
 
 
 def test_events_land_as_json_lines(tmp_path: Path) -> None:
@@ -53,9 +131,39 @@ def test_events_land_as_json_lines(tmp_path: Path) -> None:
 
     written = (tmp_path / "cost-events.jsonl").read_text(encoding="utf-8").strip()
     event = json.loads(written)
-    assert event["message"] == "ai_api_call_cost"
+    assert event["event"] == "ai_api_call_cost"
     assert event["engine"] == "claude"
     assert event["cost_usd"] == 0.0012
+
+
+def test_the_librarys_own_event_shape_is_flattened(tmp_path: Path) -> None:
+    # The library logs "%s %s" with (event_name, payload), so the structured
+    # fields live in args rather than on the record.
+    cost.attach_cost_handler()
+    logging.getLogger(cost.cost_topic()).info(
+        "%s %s",
+        "ai_api_call_cost",
+        {"model": "claude-haiku-4-5", "usd_cost": "0.000035", "input_tokens": 15},
+    )
+
+    event = json.loads((tmp_path / "cost-events.jsonl").read_text(encoding="utf-8"))
+    assert event["event"] == "ai_api_call_cost"
+    assert event["model"] == "claude-haiku-4-5"
+    assert event["usd_cost"] == "0.000035"
+    assert event["input_tokens"] == 15
+
+
+def test_logging_internals_are_not_written_to_the_sink(tmp_path: Path) -> None:
+    # Filtering against LogRecord's class __dict__ catches only methods, which
+    # let pathname, lineno, thread and the rest into every event.
+    cost.attach_cost_handler()
+    logging.getLogger(cost.cost_topic()).info(
+        "%s %s", "ai_api_call_cost", {"model": "m"}
+    )
+
+    event = json.loads((tmp_path / "cost-events.jsonl").read_text(encoding="utf-8"))
+    for noise in ("pathname", "lineno", "thread", "processName", "msg", "args"):
+        assert noise not in event
 
 
 def test_library_fields_pass_through_without_being_named(tmp_path: Path) -> None:

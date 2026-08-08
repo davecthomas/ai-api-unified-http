@@ -8,7 +8,10 @@ WEBAPP_PORT ?= 3000
 # disabling it, so local runs exercise the same path a deployment does. Real
 # deployments set HTTP_API_KEYS to a generated secret in their own environment.
 DEV_API_KEY ?= local-dev-key
-DEV_AUTH_ENV = HTTP_API_KEYS="local:$(DEV_API_KEY)"
+# The dev profile drops PII redaction, which is the only way the streaming
+# endpoint can run: the library refuses to stream while redaction is enabled.
+# Production uses config/middleware.yaml, which keeps redaction.
+DEV_ENV = HTTP_API_KEYS="local:$(DEV_API_KEY)" AI_MIDDLEWARE_CONFIG_PATH=config/middleware.dev.yaml
 
 .PHONY: help all install lint test serve smoke webapp
 
@@ -33,7 +36,7 @@ test:
 	poetry run pytest -q
 
 serve:
-	$(DEV_AUTH_ENV) poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload --port $(PORT)
+	$(DEV_ENV) poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload --port $(PORT)
 
 # Live smoke: healthz must be 200; scaffolded endpoints must answer 501.
 # Fails fast with a hint when the server is not up.
@@ -44,6 +47,7 @@ smoke:
 	@echo "no key:       HTTP $$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$(PORT)/v1/completions -H 'content-type: application/json' -d '{"engine":"claude","prompt":"hi"}') (expect 401)"
 	@echo "completions:  HTTP $$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$(PORT)/v1/completions -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{"engine":"claude","prompt":"hi"}') (expect 501)"
 	@echo "models:       HTTP $$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $(DEV_API_KEY)" http://localhost:$(PORT)/v1/models) (expect 501)"
+	@echo "stream:       HTTP $$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$(PORT)/v1/completions -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{"engine":"claude","model":"claude-haiku-4-5","prompt":"hi","stream":true}') (expect 200 with keys, 400 if redaction is on)"
 	@echo "bad body:     HTTP $$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$(PORT)/v1/completions -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{}') (expect 422)"
 	@echo "smoke OK"
 
@@ -56,7 +60,7 @@ webapp:
 # carries ?base= so it works for any PORT value.
 all:
 	@trap 'kill 0' INT TERM; \
-	$(DEV_AUTH_ENV) poetry run uvicorn ai_api_unified_http.app:create_app --factory --port $(PORT) & \
+	$(DEV_ENV) poetry run uvicorn ai_api_unified_http.app:create_app --factory --port $(PORT) & \
 	sleep 2; \
 	echo ""; \
 	echo "  ── ai-api-unified-http is up ──────────────────────────────"; \

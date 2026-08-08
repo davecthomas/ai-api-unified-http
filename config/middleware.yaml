@@ -1,0 +1,37 @@
+# ai-api-unified middleware profile owned by this service deployment.
+#
+# One file is the single control point for every web app behind the service
+# (docs/requirements.md, hard requirement 2). The library reads it from
+# AI_MIDDLEWARE_CONFIG_PATH, which the service defaults to this file.
+#
+# Both blocks below are load-bearing, and the service refuses to start when
+# the cost side of observability is off.
+
+middleware:
+  # Cost attribution. emit_cost defaults to FALSE in the library, so without
+  # this block the service would attach a handler to a topic that never
+  # receives anything and record no spend at all. Startup verifies this
+  # setting is on, so deleting it fails the service rather than silently
+  # losing every cost event.
+  - name: observability
+    enabled: true
+    settings:
+      direction: input_output
+      # Omitted capabilities means all of them.
+      log_level: INFO
+      emit_cost: true
+      include_provider_usage: true
+      emit_error_events: true
+
+  # PII redaction, required by hard requirement 2 for every call the service
+  # makes. Streaming is the documented exception: the library raises when
+  # streaming and redaction are both active, so the streaming endpoint is
+  # unredacted and callers needing redaction use the buffered one.
+  - name: pii_redaction
+    enabled: true
+    settings:
+      direction: input_only
+      strict_mode: false
+      detection_profile: balanced
+      language: en
+      country_scope: US

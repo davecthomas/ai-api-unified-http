@@ -55,12 +55,13 @@ def test_401_names_the_scheme(client: TestClient) -> None:
 
 
 def test_a_configured_key_passes_through(client: TestClient) -> None:
+    # A scaffolded route keeps this about auth: 501 means the request reached
+    # the handler. A live route would drag provider behavior into the check.
     response = client.post(
-        "/v1/completions",
-        json={"engine": "claude", "prompt": "hi"},
+        "/v1/structured",
+        json={"engine": "openai", "prompt": "hi", "response_schema": {}},
         headers=_auth(GOOD_KEY),
     )
-    # 501 means auth let it through to the still-scaffolded route.
     assert response.status_code == 501
 
 
@@ -98,8 +99,8 @@ def test_malformed_or_wrong_credentials_are_rejected(
 
 def test_bearer_value_is_whitespace_tolerant(client: TestClient) -> None:
     response = client.post(
-        "/v1/completions",
-        json={"engine": "claude", "prompt": "hi"},
+        "/v1/structured",
+        json={"engine": "openai", "prompt": "hi", "response_schema": {}},
         headers={"Authorization": f"Bearer  {GOOD_KEY}  "},
     )
     assert response.status_code == 501
@@ -170,7 +171,10 @@ def test_disabled_auth_serves_without_a_key(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv(auth.API_KEYS_ENV, raising=False)
     client = TestClient(create_app())
 
-    response = client.post("/v1/completions", json={"engine": "claude", "prompt": "hi"})
+    response = client.post(
+        "/v1/structured",
+        json={"engine": "openai", "prompt": "hi", "response_schema": {}},
+    )
     assert response.status_code == 501
 
 

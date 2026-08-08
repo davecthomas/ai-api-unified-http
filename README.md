@@ -1,12 +1,13 @@
-# ai-api-unified-http 0.3.0
+# ai-api-unified-http 0.4.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One
 implementation of provider logic, pricing, model lifecycle, and middleware —
 exposed over REST, with TypeScript clients generated from the OpenAPI spec.
 
-Status: **bootstrap**. The server runs and serves its API surface, but every
-model-invoking endpoint returns `501 Not Implemented`. `GET /healthz` is live.
+Status: **in progress**. `POST /v1/completions` is live, buffered and
+streaming; the remaining model-invoking endpoints still return
+`501 Not Implemented`. `GET /healthz` is live.
 See [docs/requirements.md](docs/requirements.md) for scope and
 [docs/technical-design.md](docs/technical-design.md) for the architecture and
 the endpoint-to-library mapping.
@@ -57,6 +58,23 @@ Authentication runs as middleware rather than a per-route dependency, so a new
 route is protected by existing. `HTTP_AUTH_DISABLED=1` turns it off for local
 work; the service starts with a warning that every caller can spend credits.
 
+### Middleware, and why streaming and redaction cannot both be on
+
+The library reads one process-wide middleware profile from
+`AI_MIDDLEWARE_CONFIG_PATH`, which the service defaults to
+`config/middleware.yaml`.
+
+| Profile | PII redaction | Streaming |
+|---|---|---|
+| `config/middleware.yaml` (default) | on | unavailable |
+| `config/middleware.dev.yaml` (`make serve`) | off | works |
+
+The library refuses to stream while redaction is enabled, because redaction
+cannot be guaranteed across chunk boundaries. The profile is process-wide, so
+a deployment gets one or the other. The default keeps redaction, and a
+streaming request against it returns 400 carrying the library's explanation.
+The dev profile drops redaction so the local harness can exercise streaming.
+
 ### Cost-event capture
 
 Every provider call emits a cost event carrying its own cost attribution, and
@@ -98,7 +116,7 @@ Then:
 
 | Method | Path | Purpose | Status |
 |---|---|---|---|
-| POST | `/v1/completions` | Text completion; `"stream": true` for SSE | 501 |
+| POST | `/v1/completions` | Text completion; `"stream": true` for SSE | **live** |
 | POST | `/v1/structured` | Schema-validated structured output | 501 |
 | POST | `/v1/conversations/turn` | One stateless tool-capable conversation turn | 501 |
 | POST | `/v1/embeddings` | Embedding vectors | 501 |
