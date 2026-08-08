@@ -8,6 +8,7 @@ Run locally with:
     # or: poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload
 """
 
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ from .cost import (
     verify_cost_capture,
 )
 from .errors import EXCEPTION_HANDLERS
+from .logging_setup import configure_logging
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
 
@@ -54,6 +56,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     library's `emit_cost_topic` without telling the service, where capture
     would attach to a topic nothing publishes to.
     """
+    # Logging first, so every decision below is visible in the log rather than
+    # discarded by an unconfigured root logger.
+    level: int = configure_logging()
+    logging.getLogger(__name__).info(
+        "starting ai-api-unified-http %s (library %s, log level %s)",
+        service_version,
+        library_version,
+        logging.getLevelName(level),
+    )
+
     # The middleware profile has to be resolved first: it decides both whether
     # the library emits cost events and which topic it publishes them on.
     apply_default_middleware_config()

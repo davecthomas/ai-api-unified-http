@@ -115,10 +115,13 @@ The library reads one process-wide middleware YAML from
 `AI_MIDDLEWARE_CONFIG_PATH`. The service ships two, and defaults the variable
 to the first when it is unset:
 
-| Profile | PII redaction | Streaming | Used by |
-|---|---|---|---|
-| `config/middleware.yaml` | on | **unavailable** | deployments (the default) |
-| `config/middleware.dev.yaml` | off | works | `make serve`, `make all` |
+One profile ships, `config/middleware.yaml`, and it enables observability with
+cost emission and leaves PII redaction off.
+
+| `pii_redaction.enabled` | Buffered | Streaming |
+|---|---|---|
+| `false` (shipped default) | works, unredacted | works |
+| `true` | works, redacted | 400 carrying the library's explanation |
 
 Two documented rules collide here, and live testing is what surfaced it:
 
@@ -134,11 +137,15 @@ The library refuses to do both. With redaction enabled it raises
 > enabled: redaction cannot be guaranteed across stream chunk boundaries.
 
 Because the profile is process-wide, one deployment gets redaction or
-streaming, never both, and no per-call override exists in the library. The
-resolution: the production default keeps redaction, so hard requirement 2
-holds and streaming returns a mapped 400 carrying the library's own
-explanation. The dev profile drops redaction so the harness can exercise the
-streaming path.
+streaming, never both, and no per-call override exists in the library.
+
+The shipped default leaves redaction off, so every endpoint including the
+streaming one works without configuration. That trades hard requirement 2's
+"every call is redacted" for a service whose documented surface all functions,
+and it makes the constraints section literally true: the streaming endpoint is
+unredacted and callers needing redaction use the buffered one — with redaction
+turned on. A deployment handling personal data enables the flag and accepts
+that streaming stops.
 
 A deployment that needs both is blocked on upstream library work — per-call
 middleware selection, or redaction that buffers chunk boundaries. Until then

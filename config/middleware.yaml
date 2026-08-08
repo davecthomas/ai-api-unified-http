@@ -3,16 +3,14 @@
 # One file is the single control point for every web app behind the service
 # (docs/requirements.md, hard requirement 2). The library reads it from
 # AI_MIDDLEWARE_CONFIG_PATH, which the service defaults to this file.
-#
-# Both blocks below are load-bearing, and the service refuses to start when
-# the cost side of observability is off.
 
 middleware:
-  # Cost attribution. emit_cost defaults to FALSE in the library, so without
-  # this block the service would attach a handler to a topic that never
-  # receives anything and record no spend at all. Startup verifies this
-  # setting is on, so deleting it fails the service rather than silently
-  # losing every cost event.
+  # Observability and cost attribution.
+  #
+  # emit_cost defaults to FALSE in the library, so without this block the
+  # service would attach a handler to a topic that never receives anything and
+  # record no spend at all. Startup verifies this setting is on, so deleting it
+  # fails the service rather than silently losing every cost event.
   - name: observability
     enabled: true
     settings:
@@ -23,12 +21,25 @@ middleware:
       include_provider_usage: true
       emit_error_events: true
 
-  # PII redaction, required by hard requirement 2 for every call the service
-  # makes. Streaming is the documented exception: the library raises when
-  # streaming and redaction are both active, so the streaming endpoint is
-  # unredacted and callers needing redaction use the buffered one.
+  # PII redaction is OFF by default, and that is a deliberate choice rather
+  # than an oversight.
+  #
+  # The library refuses to stream while redaction is enabled, because redaction
+  # cannot be guaranteed across chunk boundaries:
+  #
+  #   "Streaming completions are unavailable while PII redaction middleware is
+  #    enabled: redaction cannot be guaranteed across stream chunk boundaries."
+  #
+  # The profile is process-wide with no per-call override, so a deployment gets
+  # redaction or streaming, never both. The default keeps every endpoint
+  # working, including the streaming one.
+  #
+  # A deployment handling personal data flips `enabled` to true below and
+  # accepts that /v1/completions with stream=true then returns 400 carrying the
+  # library's explanation. docs/technical-design.md, "Middleware profile",
+  # covers the trade in full.
   - name: pii_redaction
-    enabled: true
+    enabled: false
     settings:
       direction: input_only
       strict_mode: false
