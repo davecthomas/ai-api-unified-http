@@ -48,6 +48,20 @@ use and reused. Verified safe: engine instances hold no per-conversation
 state, provider SDK clients are thread-safe, and the library's mutable
 instance attributes are idempotent lazy caches.
 
+Implemented in `clients.py`. Two properties below are deliberate choices:
+
+- **`model=None` is its own pool entry**, distinct from any named model, even
+  when the engine default resolves to that same model. The pool keys on the
+  caller's request, before the engine resolves a default.
+- **Construction runs outside the lock.** Two requests racing on the same cold
+  key can both build a client, and the loser's copy is discarded. Holding the
+  lock across construction would serialize every cold start behind one Gemini
+  network round trip, and a duplicate build is harmless because the clients
+  carry no state worth preserving.
+
+A construction failure leaves the key cold, so a request that arrives after
+the misconfiguration is fixed succeeds without a restart.
+
 ## Conversation `raw_content` round-trip
 
 `AITurnResult.raw_content` is opaque provider-SDK content the library needs
@@ -66,6 +80,31 @@ the destination is expected to become a metrics pipeline. Streaming calls
 emit their cost event when the stream ends, including client-abandoned
 streams (the library handles `GeneratorExit`).
 
+Implemented in `cost.py`, attached and verified by the app lifespan.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HTTP_COST_LOG_PATH` | `cost-events.jsonl` | Sink file; parent directories are created |
+| `HTTP_COST_TOPIC` | `ai_api_unified.observability.cost` | Logger to attach to; set it when the library's `emit_cost_topic` is retuned |
+
+Startup attaches the handler, then calls `verify_cost_capture()`, which raises
+`CostEventNotCapturedError` when the topic has no handler. The check also
+catches a deployment that retuned the library's `emit_cost_topic` without
+telling the service, where capture would attach to a topic nothing publishes
+to and every event would vanish. There is no opt-out, because hard
+requirement 3 admits none.
+
+The handler holds three properties deliberately:
+
+- **Unknown fields pass through.** Every non-standard attribute on the log
+  record is carried into the JSON object; there is no allowlist to update, so
+  a field the library adds later survives with no change here.
+- **The topic records at `INFO` regardless of the root logger.** A deployment
+  running the root at `WARNING` must not thereby drop every cost event.
+- **A failing sink never raises into the request.** Losing one event is bad;
+  taking down the call that produced it is worse, so write errors route
+  through the logging error path.
+
 ## API versioning
 
 - **URI major version** (`/v1/`): bumps only on breaking changes to request
@@ -78,16 +117,49 @@ streams (the library handles `GeneratorExit`).
   `/healthz` so operators can correlate service behavior with library
   releases.
 
-## Error mapping (to implement with the first live endpoint)
+## Error mapping
 
-| Library exception | HTTP status |
-|---|---|
-| `AiProviderConfigurationError` (retired model, bad config) | 400 |
-| `AiProviderCapabilityUnsupportedError` | 400 |
-| Provider auth failures | 502 (service-to-provider, not caller's fault) |
-| Provider rate limits | 429 with `Retry-After` when the provider supplies one |
-| Provider 5xx / network | 502 |
-| Validation errors | 422 (FastAPI default) |
+Implemented in `errors.py`. The governing question is whose fault the failure
+is: a caller who can fix the request gets a 4xx, and anything they cannot act
+on becomes a 5xx. Provider credentials live only in the service environment,
+so a provider auth rejection is a service misconfiguration reported with the
+provider's status code, and returning it verbatim would tell the caller to fix
+a key they do not hold.
+
+`AiProviderRequestError` carries the provider's own `status_code` and
+`provider_engine`, so classification reads them directly instead of matching
+message text.
+
+| Library exception | Condition | HTTP status | `error` code |
+|---|---|---|---|
+| `AiProviderRequestError` | provider 429 | 429 | `provider_rate_limited` |
+| `AiProviderRequestError` | provider 401 / 403 | 502 | `provider_auth_failed` |
+| `AiProviderRequestError` | provider 5xx | 502 | `provider_error` |
+| `AiProviderRequestError` | other provider 4xx | 400 | `provider_rejected_request` |
+| `AiProviderRequestError` | no status (connection error, client timeout) | 502 | `provider_unavailable` |
+| `AiProviderConfigurationError` | retired model, bad config | 400 | `invalid_request` |
+| `AiProviderCapabilityUnsupportedError` | engine cannot do it | 400 | `invalid_request` |
+| `AiProviderDependencyUnavailableError` | provider SDK not installed | 503 | `provider_dependency_unavailable` |
+| `StructuredResponseTokenLimitError` | response truncated by budget | 422 | `structured_response_token_limit` |
+| `AiProviderError` | anything else in the hierarchy | 502 | `provider_error` |
+| Request validation | malformed body | 422 | FastAPI default |
+
+Every mapped failure returns the same body: `error`, `detail`, `engine`, and
+`provider_status`. `provider_status` is the provider's status when one was
+reported, and never equals the response status — a provider 500 surfaces as a
+502 here.
+
+- **`Retry-After` is not forwarded.** The bootstrap plan called for passing it
+  through on a 429, but `AiProviderRequestError` carries only the status code,
+  not the provider's response headers, so the service has no value to forward.
+  Callers back off on their own schedule.
+- **The token-limit 422 names the fix.** `StructuredResponseTokenLimitError`
+  reports `minimum_supported_tokens` for the model, so the detail states the
+  floor rather than leaving the caller to bisect `max_response_tokens`.
+
+Handler registration order matters: every one of these inherits
+`AiProviderError`, so the base is registered last. Registering it first would
+collapse the whole table into one 502.
 
 ## Risks
 

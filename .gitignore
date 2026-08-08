@@ -33,3 +33,6 @@ build/
 .agents/memory/state/
 .agents/memory/logs/
 .agents/memory/.auto_bootstrap_running
+
+# Bootstrap cost-event sink (HTTP_COST_LOG_PATH default)
+cost-events.jsonl
