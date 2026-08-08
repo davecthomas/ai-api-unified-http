@@ -13,6 +13,9 @@ HTTP_HOST=0.0.0.0
 HTTP_PORT=8080
 # Python log level for the service and the library's observability events.
 LOG_LEVEL=INFO
+# Comma-separated browser origins allowed by CORS. Default admits the local
+# test web app (make webapp); deployments set their real web app origins.
+# HTTP_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
 # --- Provider credentials (fill in what you use; leave the rest blank) ---
 OPENAI_API_KEY=

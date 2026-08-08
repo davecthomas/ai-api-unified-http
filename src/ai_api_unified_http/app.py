@@ -4,17 +4,32 @@
 FastAPI application factory.
 
 Run locally with:
-    poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload
+    make serve
+    # or: poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload
 """
+
+import os
 
 from ai_api_unified.__version__ import __version__ as library_version
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .__version__ import __version__ as service_version
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
 
 API_VERSION: str = "v1"
+
+# Browser callers need CORS. Default covers the local test web app
+# (make webapp); deployments override with their web apps' origins.
+DEFAULT_CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+CORS_ORIGINS_ENV: str = "HTTP_CORS_ORIGINS"
+
+
+def _cors_origins() -> list[str]:
+    """Comma-separated origins from HTTP_CORS_ORIGINS, else the local default."""
+    raw: str = os.environ.get(CORS_ORIGINS_ENV, DEFAULT_CORS_ORIGINS)
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 def create_app() -> FastAPI:
@@ -27,6 +42,12 @@ def create_app() -> FastAPI:
             "Breaking API changes bump the URI version (/v1 -> /v2); the "
             "service itself follows semantic versioning independently."
         ),
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["content-type"],
     )
     app.include_router(v1_router)
 
