@@ -9,14 +9,23 @@ TypeScript client are stable from day one. The endpoint-to-library-call
 mapping lives in docs/technical-design.md.
 """
 
+import logging
 from collections.abc import Iterator
 from typing import Any
 
-from ai_api_unified import AICompletionsPromptParamsBase, AITool
+from ai_api_unified import (
+    AICompletionsPromptParamsBase,
+    AIFactory,
+    AiProviderCapabilityUnsupportedError,
+    AITool,
+    get_model_info,
+)
+from ai_api_unified.pricing import DICT_MODEL_INFO
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
-from .clients import get_completions_client
+from .clients import get_completions_client, get_embeddings_client
 from .conversation_token import (
     InvalidConversationTokenError,
     decode_conversation_token,
@@ -29,15 +38,24 @@ from .schemas import (
     ConversationTurnRequest,
     ConversationTurnResponse,
     EmbeddingsRequest,
+    EmbeddingsResponse,
+    EmbeddingVector,
     ErrorResponse,
+    ModelInfo,
+    ModelPricing,
+    ModelsResponse,
     NotImplementedResponse,
     StructuredRequest,
     StructuredResponse,
     TokenCountRequest,
+    TokenCountResponse,
+    TokenRates,
     TokenUsage,
     ToolCall,
 )
 from .streaming import SSE_HEADERS, SSE_MEDIA_TYPE, sse_from_sync_iterator
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 router: APIRouter = APIRouter(prefix="/v1")
 
@@ -112,6 +130,142 @@ def _expand_conversation_tokens(
         else:
             expanded.append(message)
     return expanded
+
+
+def _registry_entry(model: str) -> Any | None:
+    """Find a model's registry entry without knowing its provider.
+
+    The pricing registry keys on the provider vendor ("anthropic"), while
+    callers select an engine ("claude"), and the library exposes no public
+    engine-to-vendor mapping. Hardcoding one here would drift the first time
+    the library adds an engine.
+
+    Instead the registry's own key set is searched for the model name. Model
+    names are provider-specific in practice, so a name identifies its entry.
+
+    Args:
+        model: Provider-reported model name.
+
+    Returns:
+        Any | None: The registry entry, or None when the model is not
+            catalogued.
+    """
+    for provider, catalogued_model in DICT_MODEL_INFO:
+        if catalogued_model == model:
+            return get_model_info(provider, model)
+    return None
+
+
+async def _embed_batch(client: Any, inputs: list[str]) -> list[dict[str, Any]]:
+    """Embed a batch, falling back to the sync call when async is unsupported.
+
+    The batch call is used rather than one call per input: N single calls would
+    multiply provider round trips and cost events for one request.
+
+    Not every engine implements the async surface — Gemini's embedding models
+    raise `AiProviderCapabilityUnsupportedError` for it, and Bedrock has no
+    async at all. The sync call still works, so it runs in the threadpool
+    rather than blocking the event loop, which is the same treatment
+    `count_tokens` gets.
+
+    Args:
+        client: Pooled embeddings client.
+        inputs: Texts to embed.
+
+    Returns:
+        list[dict[str, Any]]: One provider result per input.
+    """
+    try:
+        return await client.agenerate_embeddings_batch(inputs)
+    except AiProviderCapabilityUnsupportedError:
+        logger.info(
+            "engine has no async embeddings; using the sync call in the threadpool"
+        )
+        return await run_in_threadpool(client.generate_embeddings_batch, inputs)
+
+
+# Keys providers use for the vector in an embeddings result.
+_VECTOR_KEYS: tuple[str, ...] = ("embedding", "values", "vector")
+
+
+def _vector_from(result: dict[str, Any]) -> list[float]:
+    """Pull the vector out of a provider embeddings result.
+
+    The library returns the provider's own dict, and providers disagree on the
+    key. Reading several is what keeps this endpoint working across engines
+    without a per-provider branch here.
+
+    Args:
+        result: One provider embeddings result.
+
+    Returns:
+        list[float]: The vector.
+
+    Raises:
+        HTTPException: 502 when no known key is present, since a silently empty
+            vector would be worse than a clear failure.
+    """
+    for key in _VECTOR_KEYS:
+        value = result.get(key)
+        if isinstance(value, list):
+            return [float(component) for component in value]
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            f"Embeddings result carried no vector under any known key "
+            f"({', '.join(_VECTOR_KEYS)}); keys present: "
+            f"{', '.join(sorted(result)) or 'none'}."
+        ),
+    )
+
+
+def _model_info(info: Any) -> ModelInfo:
+    """Convert a registry entry into the response model."""
+    return ModelInfo(
+        provider=info.provider,
+        model=info.model,
+        status=info.status.value,
+        sunset_date=info.sunset_date.isoformat() if info.sunset_date else None,
+        recommended_replacement=info.recommended_replacement,
+        pricing=_model_pricing(info.pricing),
+    )
+
+
+def _model_pricing(pricing: Any) -> ModelPricing | None:
+    """Convert registry pricing, keeping money values as strings.
+
+    Decimal money cannot round-trip through binary floating point, so rates
+    are serialized as strings rather than becoming 0.07499999999999999 in a
+    field callers may use to compute cost.
+    """
+    if pricing is None:
+        return None
+    rates = pricing.token_rates
+    return ModelPricing(
+        unit=pricing.unit.value,
+        currency=pricing.currency,
+        effective_date=pricing.effective_date.isoformat(),
+        source=pricing.source,
+        confidence=pricing.confidence,
+        token_rates=(
+            TokenRates(
+                input_per_1m=str(rates.input_per_1m),
+                output_per_1m=(
+                    str(rates.output_per_1m)
+                    if rates.output_per_1m is not None
+                    else None
+                ),
+                cached_input_per_1m=(
+                    str(rates.cached_input_per_1m)
+                    if rates.cached_input_per_1m is not None
+                    else None
+                ),
+            )
+            if rates is not None
+            else None
+        ),
+        notes=pricing.notes,
+    )
 
 
 def _optional(**kwargs: Any) -> dict[str, Any]:
@@ -311,29 +465,99 @@ async def conversation_turn(
 
 @router.post(
     "/embeddings",
-    responses={501: {"model": NotImplementedResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
     summary="Embedding vectors for one or more inputs",
 )
-def embeddings(request: EmbeddingsRequest) -> JSONResponse:
-    """Will map to agenerate_embeddings / agenerate_embeddings_batch."""
-    return _not_implemented("/v1/embeddings")
+async def embeddings(request: EmbeddingsRequest) -> EmbeddingsResponse:
+    """Embed one or more inputs.
+
+    Args:
+        request: Engine selection and the texts to embed.
+
+    Returns:
+        EmbeddingsResponse: One vector per input, index-paired to the inputs.
+    """
+    if not request.inputs:
+        raise HTTPException(status_code=400, detail="inputs must not be empty.")
+
+    client = get_embeddings_client(request.engine, request.model)
+    results: list[dict[str, Any]] = await _embed_batch(client, request.inputs)
+
+    vectors: list[EmbeddingVector] = [
+        EmbeddingVector(index=index, embedding=_vector_from(result))
+        for index, result in enumerate(results)
+    ]
+    return EmbeddingsResponse(
+        vectors=vectors,
+        engine=request.engine,
+        model=request.model,
+        dimensions=len(vectors[0].embedding) if vectors else None,
+    )
 
 
 @router.post(
     "/tokens/count",
-    responses={501: {"model": NotImplementedResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
     summary="Provider-side token count for a prompt",
 )
-def token_count(request: TokenCountRequest) -> JSONResponse:
-    """Will map to count_tokens (sync; served from the threadpool)."""
-    return _not_implemented("/v1/tokens/count")
+async def token_count(request: TokenCountRequest) -> TokenCountResponse:
+    """Count tokens in a prompt, as the provider counts them.
+
+    `count_tokens` is synchronous and some providers make a network call for
+    it, so it runs in the threadpool rather than blocking the event loop.
+
+    Args:
+        request: Engine selection and the prompt to measure.
+
+    Returns:
+        TokenCountResponse: The provider-side token count.
+    """
+    client = get_completions_client(request.engine, request.model)
+    count: int = await run_in_threadpool(client.count_tokens, request.prompt)
+    return TokenCountResponse(
+        token_count=count, engine=request.engine, model=request.model
+    )
 
 
 @router.get(
     "/models",
-    responses={501: {"model": NotImplementedResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
     summary="Catalogued models with capabilities, pricing, and lifecycle",
 )
-def models() -> JSONResponse:
-    """Will surface list_model_names, capabilities, and the pricing registry."""
-    return _not_implemented("/v1/models")
+async def models(engine: str) -> ModelsResponse:
+    """List an engine's models with their lifecycle and pricing.
+
+    `engine` is required rather than optional. Listing every engine would mean
+    constructing a client for each one on a single request, and client
+    construction re-reads configuration and makes a network round trip on
+    Gemini. One engine per call keeps the cost of this endpoint predictable.
+
+    Args:
+        engine: Engine token to list.
+
+    Returns:
+        ModelsResponse: Provider-reported models, plus registry entries for
+            lifecycle and pricing.
+    """
+    client = get_completions_client(engine, None)
+    # list_completion_models talks to the provider, so it goes to the threadpool.
+    names: list[str] = await run_in_threadpool(AIFactory.list_completion_models, client)
+
+    catalog: list[ModelInfo] = []
+    for name in names:
+        info = _registry_entry(name)
+        if info is not None:
+            catalog.append(_model_info(info))
+    return ModelsResponse(engine=engine, models=names, catalog=catalog)

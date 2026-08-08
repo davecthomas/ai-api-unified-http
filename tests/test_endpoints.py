@@ -1,12 +1,13 @@
 # tests/test_endpoints.py
 
 """
-Bootstrap contract: /healthz is live and reports all three versions; every
-scaffolded v1 endpoint returns 501 with the uniform not-implemented body,
-and the OpenAPI spec includes the full v1 surface.
+Service-wide surface contract: /healthz reports all three versions, request
+schemas are enforced before any handler runs, and the OpenAPI spec carries the
+full v1 surface the TypeScript client is generated from.
+
+Per-endpoint behavior lives in the endpoint's own test module.
 """
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -21,32 +22,17 @@ def test_healthz_reports_versions(client: TestClient) -> None:
     assert body["library_version"].count(".") == 2
 
 
-SCAFFOLDED_POST_ENDPOINTS: list[tuple[str, dict]] = [
-    ("/v1/embeddings", {"engine": "google-gemini", "inputs": ["hi"]}),
-    ("/v1/tokens/count", {"engine": "claude", "prompt": "hi"}),
-]
-
-
-@pytest.mark.parametrize("path,body", SCAFFOLDED_POST_ENDPOINTS)
-def test_post_endpoints_return_501(client: TestClient, path: str, body: dict) -> None:
-    response = client.post(path, json=body)
-    assert response.status_code == 501
-    payload = response.json()
-    assert payload["error"] == "not_implemented"
-    assert payload["endpoint"] == path
-
-
-def test_models_returns_501(client: TestClient) -> None:
-    response = client.get("/v1/models")
-    assert response.status_code == 501
-    assert response.json()["error"] == "not_implemented"
-
-
 def test_invalid_body_is_422(client: TestClient) -> None:
-    # Schema validation runs before any handler, so the OpenAPI request
-    # shapes are enforced regardless of whether the route is live.
+    # Schema validation runs before any handler, so a malformed request never
+    # reaches a provider and never costs anything.
     response = client.post("/v1/completions", json={"prompt": "no engine"})
     assert response.status_code == 422
+
+
+def test_models_requires_an_engine(client: TestClient) -> None:
+    # engine is required rather than optional: listing every engine would
+    # construct a client per engine on one request.
+    assert client.get("/v1/models").status_code == 422
 
 
 def test_openapi_covers_v1_surface(client: TestClient) -> None:
@@ -61,3 +47,14 @@ def test_openapi_covers_v1_surface(client: TestClient) -> None:
         "/healthz",
     }
     assert expected_paths.issubset(spec["paths"].keys())
+
+
+def test_no_endpoint_still_returns_not_implemented(client: TestClient) -> None:
+    # The whole documented v1 surface is live. If a route regresses to a 501
+    # scaffold, this catches it rather than the README quietly going stale.
+    spec = client.get("/openapi.json").json()
+    for path, methods in spec["paths"].items():
+        if not path.startswith("/v1"):
+            continue
+        for operation in methods.values():
+            assert "501" not in operation.get("responses", {}), path
