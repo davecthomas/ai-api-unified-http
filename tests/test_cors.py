@@ -12,11 +12,6 @@ from fastapi.testclient import TestClient
 from ai_api_unified_http.app import create_app
 
 
-@pytest.fixture(scope="module")
-def client() -> TestClient:
-    return TestClient(create_app())
-
-
 def test_local_webapp_origin_allowed(client: TestClient) -> None:
     response = client.get("/healthz", headers={"origin": "http://localhost:3000"})
     assert response.status_code == 200

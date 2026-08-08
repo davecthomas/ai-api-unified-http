@@ -62,6 +62,45 @@ Implemented in `clients.py`. Two properties below are deliberate choices:
 A construction failure leaves the key cold, so a request that arrives after
 the misconfiguration is fixed succeeds without a restart.
 
+## Authentication
+
+Implemented in `auth.py`. Provider credentials live only in the service
+environment, so every accepted request spends money the caller never had to
+hold a key for. That inverts the usual risk: an unauthenticated endpoint here
+is an open tab rather than an information leak, which is why auth landed
+before the first live endpoint instead of after.
+
+A shared secret in `Authorization: Bearer <key>`, configured through
+`HTTP_API_KEYS` as comma-separated `label:key` entries. Several keys are live
+at once so a caller can be rotated or revoked alone, and the label names the
+calling application in logs. The label authenticates nothing.
+
+Four properties are deliberate:
+
+- **Middleware, not a per-route dependency.** A new route is protected by
+  existing, so adding an endpoint cannot quietly expose paid capacity by
+  forgetting a decorator. A test asserts every `/v1` path in the OpenAPI spec
+  answers 401 without a key.
+- **CORS wraps auth.** Starlette runs the last-added middleware outermost, so
+  CORS is registered after auth. A 401 has to carry CORS headers, or a browser
+  caller sees an opaque network error instead of the body explaining the key
+  was missing.
+- **`OPTIONS` is never gated.** Browsers do not attach `Authorization` to a
+  preflight, so gating it would make every cross-origin call fail before it
+  could authenticate.
+- **Key comparison uses `hmac.compare_digest`** against every configured key,
+  so the time taken does not depend on how far the key matched.
+
+Startup raises `AuthNotConfiguredError` when no keys are set and no explicit
+opt-out was given. The failure this prevents is a deployment that simply
+forgot to set keys and therefore serves paid endpoints to anyone who can reach
+the port. `HTTP_AUTH_DISABLED=1` is the deliberate opt-out and logs a warning
+on every start.
+
+This is not a user identity system. Keys name calling applications, and the
+service stores no per-key state beyond the label. Per-user identity, quotas,
+and per-caller rate limits belong behind a real identity provider.
+
 ## Conversation `raw_content` round-trip
 
 `AITurnResult.raw_content` is opaque provider-SDK content the library needs

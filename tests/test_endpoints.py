@@ -9,13 +9,6 @@ and the OpenAPI spec includes the full v1 surface.
 import pytest
 from fastapi.testclient import TestClient
 
-from ai_api_unified_http.app import create_app
-
-
-@pytest.fixture(scope="module")
-def client() -> TestClient:
-    return TestClient(create_app())
-
 
 def test_healthz_reports_versions(client: TestClient) -> None:
     response = client.get("/healthz")

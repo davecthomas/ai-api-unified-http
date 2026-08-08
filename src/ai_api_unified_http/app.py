@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .__version__ import __version__ as service_version
+from .auth import ApiKeyAuthMiddleware, verify_auth_configured
 from .cost import attach_cost_handler, verify_cost_capture
 from .errors import EXCEPTION_HANDLERS
 from .routes_v1 import router as v1_router
@@ -38,15 +39,20 @@ def _cors_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Attach cost capture before serving, and refuse to serve without it.
+    """Verify the service can account for and gate its own spend before serving.
 
-    Startup order matters: the handler is attached first, then verified. The
-    verification is not a formality about our own handler — it also catches a
-    deployment that retuned the library's `emit_cost_topic` without telling the
-    service, where capture would attach to a topic nothing publishes to.
+    Both checks guard the same thing from opposite sides: cost capture records
+    what was spent, and authentication governs who can spend it. A deployment
+    missing either one is one this service refuses to run.
+
+    Startup order matters for the first: the handler is attached, then
+    verified. That verification also catches a deployment that retuned the
+    library's `emit_cost_topic` without telling the service, where capture
+    would attach to a topic nothing publishes to.
     """
     attach_cost_handler()
     verify_cost_capture()
+    verify_auth_configured()
     yield
 
 
@@ -64,11 +70,16 @@ def create_app() -> FastAPI:
     )
     for exception_type, handler in EXCEPTION_HANDLERS:
         app.add_exception_handler(exception_type, handler)
+    # Starlette runs the last-added middleware outermost, so CORS is added
+    # after auth in order to wrap it. A 401 raised by auth has to carry CORS
+    # headers, or a browser caller sees an opaque network error instead of the
+    # 401 body telling it the key was missing.
+    app.add_middleware(ApiKeyAuthMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["content-type"],
+        allow_headers=["content-type", "authorization"],
     )
     app.include_router(v1_router)
 

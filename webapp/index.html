@@ -10,6 +10,8 @@
     h1 { font-size: 1.2rem; }
     p  { font-family: system-ui, sans-serif; }
     button { margin: 0.15rem 0.3rem 0.15rem 0; padding: 0.4rem 0.8rem; cursor: pointer; }
+    label { font-family: system-ui, sans-serif; font-size: 0.85rem; display: block; margin-bottom: 0.75rem; }
+    input { font-family: inherit; padding: 0.3rem; width: 22rem; max-width: 100%; margin-left: 0.4rem; }
     #log { border: 1px solid #8884; padding: 1rem; min-height: 12rem; white-space: pre-wrap; word-break: break-all; font-size: 0.85rem; }
     .ok { color: #2a7; } .warn { color: #d80; } .err { color: #d33; }
   </style>
@@ -22,6 +24,10 @@
     except <code>/healthz</code> answers <b>501</b> — that is the expected
     result, shown in orange. Green is 2xx; red is a network or server error.
   </p>
+  <label>
+    API key
+    <input id="apikey" type="text" spellcheck="false" autocomplete="off">
+  </label>
   <div id="buttons"></div>
   <div id="log">Click a button to call the service.</div>
   <script src="app.js"></script>
