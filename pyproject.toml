@@ -1,0 +1,29 @@
+[project]
+name = "ai_api_unified_http"
+
+version = "0.1.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
+description = "HTTP service exposing ai-api-unified to non-Python apps"
+authors = [{ name = "Dave Thomas", email = "davidcthomas@gmail.com" }]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ai-api-unified (==2.22.0)",
+    "fastapi (>=0.115,<1.0)",
+    "uvicorn[standard] (>=0.30,<1.0)",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest (>=8.0)",
+    "httpx (>=0.27)",
+    "black (>=24.0)",
+    "ruff (>=0.5)",
+]
+
+[tool.poetry]
+packages = [{ include = "ai_api_unified_http", from = "src" }]
+
+[build-system]
+requires = ["poetry-core>=1.9"]
+build-backend = "poetry.core.masonry.api"
