@@ -17,6 +17,17 @@ LOG_LEVEL=INFO
 # test web app (make webapp); deployments set their real web app origins.
 # HTTP_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
+# --- Authentication (required; the service refuses to start without it) ---
+# Every /v1 endpoint spends provider credits, and callers never hold provider
+# keys, so an unauthenticated endpoint is an open tab rather than a data leak.
+# Comma-separated keys. Each entry is "label:key" or a bare "key"; the label
+# names the calling application in logs and authenticates nothing on its own.
+# Generate one with: openssl rand -hex 32
+# HTTP_API_KEYS=webapp:replace-with-a-generated-secret,batch:another-secret
+# Run without authentication on purpose (local development only). The service
+# starts with a warning; every caller can spend provider credits.
+# HTTP_AUTH_DISABLED=1
+
 # --- Cost-event capture (required; the service refuses to start without it) ---
 # Every provider call emits a cost event. The service attaches a handler to
 # the library's cost topic at startup and fails loudly if nothing is listening,

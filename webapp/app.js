@@ -4,8 +4,19 @@
 
 // Default matches `make serve`; override for a non-default port with
 // ?base=http://localhost:9000
-const BASE =
-  new URLSearchParams(location.search).get("base") || "http://localhost:8080";
+const PARAMS = new URLSearchParams(location.search);
+const BASE = PARAMS.get("base") || "http://localhost:8080";
+
+// The service authenticates every /v1 call. `make all` links here with
+// ?key=..., and the field below stays editable so a wrong key can be tried
+// against the real 401 path.
+const KEY_FIELD = document.getElementById("apikey");
+KEY_FIELD.value = PARAMS.get("key") || "local-dev-key";
+
+function authHeaders() {
+  const key = KEY_FIELD.value.trim();
+  return key ? { authorization: `Bearer ${key}` } : {};
+}
 
 const CALLS = [
   { label: "GET /healthz", method: "GET", path: "/healthz" },
@@ -51,6 +62,12 @@ const CALLS = [
     body: { engine: "claude", prompt: "How many tokens is this?" },
   },
   {
+    label: "GET /v1/models (no key — expect 401)",
+    method: "GET",
+    path: "/v1/models",
+    anonymous: true,
+  },
+  {
     label: "POST /v1/completions (invalid body — expect 422)",
     method: "POST",
     path: "/v1/completions",
@@ -68,20 +85,31 @@ function cssClass(status) {
   return "err";
 }
 
+function hint(status) {
+  if (status === 401) {
+    return "\n\nThe API key was missing or wrong. `make serve` uses "
+      + "local-dev-key unless DEV_API_KEY is set.";
+  }
+  return "";
+}
+
 async function call(spec) {
   const started = performance.now();
   log.textContent = `${spec.label} ...`;
   try {
     const response = await fetch(BASE + spec.path, {
       method: spec.method,
-      headers: spec.body ? { "content-type": "application/json" } : {},
+      headers: {
+        ...(spec.anonymous ? {} : authHeaders()),
+        ...(spec.body ? { "content-type": "application/json" } : {}),
+      },
       body: spec.body ? JSON.stringify(spec.body) : undefined,
     });
     const ms = Math.round(performance.now() - started);
     const text = await response.text();
     let pretty = text;
     try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch { /* keep raw */ }
-    log.innerHTML = `<span class="${cssClass(response.status)}">${spec.label} → HTTP ${response.status} (${ms} ms)</span>\n${pretty}`;
+    log.innerHTML = `<span class="${cssClass(response.status)}">${spec.label} → HTTP ${response.status} (${ms} ms)</span>\n${pretty}${hint(response.status)}`;
   } catch (error) {
     log.innerHTML = `<span class="err">${spec.label} → ${error}</span>\nIs the service running? Start it with: make serve`;
   }
