@@ -39,5 +39,6 @@ smoke:
 	@echo "smoke OK"
 
 webapp:
-	@echo "web app on http://localhost:$(WEBAPP_PORT) — expects the API on port $(PORT) (make serve)"
+	@echo "web app on http://localhost:$(WEBAPP_PORT) — calls the API on port 8080 by default"
+	@echo "for a non-default API port: http://localhost:$(WEBAPP_PORT)/?base=http://localhost:$(PORT)"
 	cd webapp && python3 -m http.server $(WEBAPP_PORT)

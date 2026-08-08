@@ -2,7 +2,10 @@
 // Served by `make webapp` (port 3000); the service runs on port 8080 with
 // CORS for this origin enabled by default.
 
-const BASE = "http://localhost:8080";
+// Default matches `make serve`; override for a non-default port with
+// ?base=http://localhost:9000
+const BASE =
+  new URLSearchParams(location.search).get("base") || "http://localhost:8080";
 
 const CALLS = [
   { label: "GET /healthz", method: "GET", path: "/healthz" },
