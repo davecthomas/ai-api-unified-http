@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ai-api-unified-http test app</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.2rem; }
+    p  { font-family: system-ui, sans-serif; }
+    button { margin: 0.15rem 0.3rem 0.15rem 0; padding: 0.4rem 0.8rem; cursor: pointer; }
+    #log { border: 1px solid #8884; padding: 1rem; min-height: 12rem; white-space: pre-wrap; word-break: break-all; font-size: 0.85rem; }
+    .ok { color: #2a7; } .warn { color: #d80; } .err { color: #d33; }
+  </style>
+</head>
+<body>
+  <h1>ai-api-unified-http test app</h1>
+  <p>
+    Exercises the local service (<code id="base">http://localhost:8080</code>).
+    Start it with <code>make serve</code>. During bootstrap, every endpoint
+    except <code>/healthz</code> answers <b>501</b> — that is the expected
+    result, shown in orange. Green is 2xx; red is a network or server error.
+  </p>
+  <div id="buttons"></div>
+  <div id="log">Click a button to call the service.</div>
+  <script src="app.js"></script>
+</body>
+</html>

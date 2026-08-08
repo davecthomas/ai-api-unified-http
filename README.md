@@ -1,4 +1,4 @@
-# ai-api-unified-http 0.1.0
+# ai-api-unified-http 0.2.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One
@@ -28,6 +28,13 @@ Variable names in `.env` are identical to the ai-api-unified library's, so a
 [`env_template`](env_template) for every supported variable.
 
 ## Run
+
+```bash
+make serve          # service on http://localhost:8080 (PORT=... to change)
+```
+
+`make help` lists every target: `install`, `lint`, `test`, `serve`, `smoke`,
+and `webapp`. Without make:
 
 ```bash
 poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload --port 8080
@@ -84,8 +91,21 @@ service; there is no PyPI publish step.
 ## Tests
 
 ```bash
-poetry run pytest -q
+make test           # mocked suite; no server needed
 ```
+
+With the server running (`make serve` in another terminal):
+
+```bash
+make smoke          # live checks: healthz 200, scaffolds 501, bad body 422
+make webapp         # test web app on http://localhost:3000
+```
+
+The test web app (`webapp/`, plain HTML + JS, no build step) calls every
+endpoint from the browser and renders status and body. During bootstrap the
+expected results are 200 for `/healthz` and 501 everywhere else. The service
+allows the web app's origin through CORS by default; deployments set
+`HTTP_CORS_ORIGINS` to their real web app origins.
 
 ## Development conventions
 
