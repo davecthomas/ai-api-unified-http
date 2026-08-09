@@ -1,4 +1,4 @@
-# ai-api-unified-http 0.7.0
+# ai-api-unified-http 0.8.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One
@@ -67,29 +67,17 @@ Authentication runs as middleware rather than a per-route dependency, so a new
 route is protected by existing. `HTTP_AUTH_DISABLED=1` turns it off for local
 work; the service starts with a warning that every caller can spend credits.
 
-### Middleware, and why streaming and redaction cannot both be on
+### Middleware profile
 
 The library reads one process-wide middleware profile from
 `AI_MIDDLEWARE_CONFIG_PATH`, which the service defaults to
-[`config/middleware.yaml`](config/middleware.yaml). Out of the box that profile
-enables observability with cost emission and leaves **PII redaction off**.
+[`config/middleware.yaml`](config/middleware.yaml). That profile enables
+observability with cost emission, and leaves PII redaction off so every
+endpoint including streaming works out of the box.
 
-The library refuses to stream while redaction is enabled, because redaction
-cannot be guaranteed across chunk boundaries:
-
-> Streaming completions are unavailable while PII redaction middleware is
-> enabled: redaction cannot be guaranteed across stream chunk boundaries.
-
-The profile is process-wide with no per-call override, so a deployment gets one
-or the other:
-
-| `pii_redaction.enabled` | Buffered completions | Streaming completions |
-|---|---|---|
-| `false` (default) | work, unredacted | work |
-| `true` | work, redacted | 400 with the library's explanation |
-
-A deployment handling personal data flips that flag and accepts that streaming
-stops. `docs/technical-design.md` covers the trade in full.
+A deployment that needs redaction sets `pii_redaction.enabled: true` in the
+profile. The library then refuses streaming calls, which return 400 carrying
+its explanation.
 
 ### Cost-event capture
 
@@ -115,8 +103,8 @@ CostEventNotCapturedError: No handler is attached to the cost topic ...
 make serve          # service on http://localhost:8080 (PORT=... to change)
 ```
 
-`make help` lists every target: `install`, `lint`, `test`, `serve`, `smoke`,
-and `webapp`. Without make:
+`make help` lists every target: `env`, `install`, `lint`, `test`, `serve`, and
+`smoke`. Without make:
 
 ```bash
 poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload --port 8080
@@ -224,21 +212,31 @@ make test           # mocked suite; no server needed
 With the server running (`make serve` in another terminal):
 
 ```bash
-make smoke          # live checks: healthz 200, no-key 401, scaffolds 501, bad body 422
-make webapp         # test web app on http://localhost:3000
+make smoke          # live checks against a running server
 ```
 
-The test web app (`webapp/`, plain HTML + JS, no build step) calls every
-endpoint from the browser and renders status and body. During bootstrap the
-expected results are 200 for `/healthz` and 501 everywhere else. The service
-allows the web app's origin through CORS by default; deployments set
-`HTTP_CORS_ORIGINS` to their real web app origins.
+`make smoke` calls real providers, so it costs a small amount. It checks that
+`/healthz` answers 200, an unkeyed call is rejected with 401, buffered and
+streaming completions return 200, the model catalog returns 200, and a
+malformed body returns 422.
 
-The harness runs **with** authentication rather than disabling it, so local
-runs exercise the same path a deployment does. `make serve` and `make all` use
-the key `local-dev-key` (override with `DEV_API_KEY=...`), and `make all`
-links the web app with that key prefilled. The key field in the page stays
-editable, so a wrong key can be tried against the real 401.
+## Browser console
+
+A sample consumer lives in its own repo:
+[ai-api-unified-http-webapp](https://github.com/davecthomas/ai-api-unified-http-webapp).
+It drives every endpoint from editable inputs, renders SSE as it arrives, and
+holds conversation history in the page. It is separate so this repo stays a
+lean wrapper around the library, and so the two version independently.
+
+Run it beside the service:
+
+```bash
+make serve                                  # here: service on :8080
+make serve   # in the webapp checkout: console on :3000
+```
+
+The service admits `http://localhost:3000` through CORS by default;
+deployments set `HTTP_CORS_ORIGINS` to their real web app origins.
 
 ## Development conventions
 
