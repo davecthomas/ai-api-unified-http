@@ -27,6 +27,7 @@ from .cost import (
 )
 from .errors import EXCEPTION_HANDLERS, ErrorEnvelopeMiddleware
 from .logging_setup import configure_logging
+from .rate_limit import RateLimitMiddleware, rate_limit, window_seconds
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
 
@@ -78,6 +79,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     attach_cost_handler()
     verify_cost_capture()
     verify_auth_configured()
+
+    limit: int = rate_limit()
+    if limit:
+        logging.getLogger(__name__).info(
+            "rate limit: %s requests per %ss per key, per worker",
+            limit,
+            window_seconds(),
+        )
+    else:
+        logging.getLogger(__name__).warning(
+            "rate limiting is DISABLED; a caller can spend without bound"
+        )
     yield
 
 
@@ -99,10 +112,12 @@ def create_app() -> FastAPI:
     # after auth in order to wrap it. A 401 raised by auth has to carry CORS
     # headers, or a browser caller sees an opaque network error instead of the
     # 401 body telling it the key was missing.
-    # Nesting, outermost first: CORS, error envelope, auth, routes.
+    # Nesting, outermost first: CORS, error envelope, auth, rate limit, routes.
     # add_middleware prepends, so these are registered inside-out. The envelope
     # sits inside CORS so its responses still carry CORS headers, and outside
-    # auth so a bug there is enveloped too.
+    # auth so a bug there is enveloped too. The limiter sits inside auth
+    # because it counts against the key's label, which auth resolves.
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(ApiKeyAuthMiddleware)
     app.add_middleware(ErrorEnvelopeMiddleware)
     app.add_middleware(
@@ -113,13 +128,22 @@ def create_app() -> FastAPI:
     )
     app.include_router(v1_router)
 
-    @app.get("/healthz", response_model=HealthResponse, summary="Liveness and versions")
-    def healthz() -> HealthResponse:
+    def _health() -> HealthResponse:
         return HealthResponse(
             status="ok",
             service_version=service_version,
             api_version=API_VERSION,
             library_version=library_version,
         )
+
+    # Served at two paths for one reason: Google Cloud Run's frontend answers
+    # /healthz itself and never forwards it to the container, so a deployment
+    # there needs a path it does not reserve. Both return the same body.
+    app.get("/healthz", response_model=HealthResponse, summary="Liveness and versions")(
+        _health
+    )
+    app.get("/health", response_model=HealthResponse, summary="Liveness and versions")(
+        _health
+    )
 
     return app

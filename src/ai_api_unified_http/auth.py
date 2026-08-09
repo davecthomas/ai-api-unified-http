@@ -42,7 +42,14 @@ AUTH_DISABLED_ENV: Final[str] = "HTTP_AUTH_DISABLED"
 # TypeScript client is generated from, so gating them would break codegen for
 # every consumer that does not already have a key.
 PUBLIC_PATHS: Final[frozenset[str]] = frozenset(
-    {"/healthz", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+    {
+        "/healthz",
+        "/health",
+        "/openapi.json",
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+    }
 )
 
 _BEARER_PREFIX: Final[str] = "Bearer "

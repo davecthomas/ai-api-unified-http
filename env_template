@@ -20,6 +20,12 @@ LOG_LEVEL=INFO
 # test web app (make webapp); deployments set their real web app origins.
 # HTTP_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
+# --- Rate limiting (guards provider spend) ---
+# Requests allowed per API key per window. The count is per worker process, so
+# the effective ceiling is this times WEB_CONCURRENCY. 0 disables it.
+# HTTP_RATE_LIMIT=60
+# HTTP_RATE_LIMIT_WINDOW_SECONDS=60
+
 # --- Authentication (required; the service refuses to start without it) ---
 # Every /v1 endpoint spends provider credits, and callers never hold provider
 # keys, so an unauthenticated endpoint is an open tab rather than a data leak.
