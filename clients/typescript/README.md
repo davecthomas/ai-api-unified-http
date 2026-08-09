@@ -1,12 +1,24 @@
 # @davecthomas/ai-api-unified-http-client
 
-Typed TypeScript client for
-[ai-api-unified-http](https://github.com/davecthomas/ai-api-unified-http),
-generated from the service's OpenAPI document.
+TypeScript client for
+[ai-api-unified-http](https://github.com/davecthomas/ai-api-unified-http).
 
-Nothing here describes a request or response by hand. `src/schema.ts` is
-generated, and CI regenerates it on every pull request and fails when the
-committed output has moved, so the client cannot fall behind the service.
+The service describes itself at `/openapi.json`: every endpoint, every field
+you can send, every field that comes back. A tool reads that description and
+writes `src/schema.ts` from it. Nobody types those shapes by hand, which is
+what "generated" means here.
+
+The editor then knows the field names, so a typo or a missing required field
+is an error before the code runs. Without it, the same mistake reaches the
+server and comes back as a 422.
+
+```ts
+client.raw.POST("/v1/completions", { body: { engine: "claude", promt: "hi" } });
+//                                                             ^^^^^ caught here
+```
+
+CI regenerates the file on every pull request and fails when the committed
+version has moved, so the client cannot fall behind the service it describes.
 
 ## Install
 

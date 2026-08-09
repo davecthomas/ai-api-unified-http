@@ -233,9 +233,26 @@ deploys the service; there is no PyPI publish step.
 
 ## TypeScript client
 
-[`clients/typescript`](clients/typescript) holds a typed client generated from
-this service's OpenAPI document. Nothing in it describes a request or response
-by hand.
+The service describes itself at `/openapi.json`: every endpoint, every field
+you can send, every field that comes back. A tool reads that description and
+writes the TypeScript for you. That is what "generated" means here — nobody
+types the request and response shapes by hand, so they cannot disagree with the
+service.
+
+Whoever calls the API gets an editor that knows the field names:
+
+```js
+// hand-written: nothing checks this, and the typo ships
+fetch("/v1/completions", { body: JSON.stringify({ engine: "claude", promt: "hi" }) });
+
+// generated: the typo is an error before the code runs
+client.raw.POST("/v1/completions", { body: { engine: "claude", promt: "hi" } });
+```
+
+Responses work the same way. `data.text` autocompletes because the tool read
+the spec and knows the field exists.
+
+[`clients/typescript`](clients/typescript) holds the client.
 
 ```ts
 const client = createAiApiClient({ baseUrl, apiKey, caller: { callerId: "user-42" } });
