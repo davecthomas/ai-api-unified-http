@@ -201,6 +201,19 @@ The handler holds three properties deliberately:
   `/healthz` so operators can correlate service behavior with library
   releases.
 
+## Configuration loading
+
+`config.py` loads `.env` into `os.environ` at startup, and real environment
+variables win over the file.
+
+The division is easy to get wrong. The library reads `.env` for **its**
+settings on its own — `EnvSettings` is a pydantic-settings model declared with
+`env_file=".env"` — but that populates the model, not `os.environ`. The
+service's own variables (`HTTP_API_KEYS`, `HTTP_COST_LOG_PATH`,
+`HTTP_CORS_ORIGINS`, `LOG_LEVEL`) are read straight from `os.environ`, so
+without this load a `.env` holding `HTTP_API_KEYS` leaves the service with no
+keys configured at all.
+
 ## Error mapping
 
 Implemented in `errors.py`. The governing question is whose fault the failure
@@ -244,6 +257,30 @@ reported, and never equals the response status — a provider 500 surfaces as a
 Handler registration order matters: every one of these inherits
 `AiProviderError`, so the base is registered last. Registering it first would
 collapse the whole table into one 502.
+
+### Failures outside the library's hierarchy
+
+Two gaps sat outside the table until they showed up in a running service.
+
+**Missing credentials.** Provider SDKs raise a plain `ValueError` naming the
+variable ("ANTHROPIC_API_KEY environment variable must be set"), which is not
+an `AiProviderError` and so matched no handler. `clients.py` translates it at
+construction, where the engine is still known, into
+`ProviderNotConfiguredError` → **503**, with the variable name in the detail.
+503 rather than a 4xx because the caller did nothing wrong and retrying will
+not help until an operator acts.
+
+**Everything else.** Anything unclassified reached Starlette's server-error
+handler, which sits *outside* the CORS middleware — so the caller got an HTML
+traceback with no `Access-Control-Allow-Origin` header, and a browser saw an
+opaque network error rather than a reason.
+
+`ErrorEnvelopeMiddleware` closes that. It runs inside CORS and outside the
+routes, so whatever it returns still carries CORS headers, and it converts any
+unhandled exception into the same JSON error shape with a 500. The body never
+carries the traceback: it carries a request id that is also written to the log
+line holding the traceback, so an operator can join the two without the caller
+seeing internals.
 
 ## Risks
 

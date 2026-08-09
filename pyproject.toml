@@ -1,7 +1,7 @@
 [project]
 name = "ai_api_unified_http"
 
-version = "0.8.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
+version = "0.8.1" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
 description = "HTTP service exposing ai-api-unified to non-Python apps"
 authors = [{ name = "Dave Thomas", email = "davidcthomas@gmail.com" }]
 license = "MIT"
@@ -16,6 +16,9 @@ dependencies = [
     # library's redaction and observability middleware.
     "ai-api-unified[anthropic,google-gemini,middleware-pii-redaction,openai] (==2.22.0)",
     "fastapi (>=0.115,<1.0)",
+    # Read directly by config.py. It arrives transitively today, but a direct
+    # import belongs in the direct dependencies.
+    "python-dotenv (>=1.0,<2.0)",
     "uvicorn[standard] (>=0.30,<1.0)",
 ]
 

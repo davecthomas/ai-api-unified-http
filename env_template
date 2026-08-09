@@ -65,10 +65,12 @@ EMBEDDING_ENGINE=google-gemini
 #   openai:        default gpt-5.4-mini    | gpt-5.5 | gpt-5.4 | gpt-5.4-nano | gpt-4o-mini
 #   claude:        default claude-opus-4-8 | claude-opus-5 | claude-sonnet-5 | claude-fable-5 | claude-haiku-4-5
 #   google-gemini: default gemini-3.5-flash | gemini-3.6-flash | gemini-3.5-flash-lite | gemini-3.1-pro-preview | gemini-2.5-flash
-# Leave COMPLETIONS_MODEL_NAME blank to take the engine default. A value here
-# must belong to COMPLETIONS_ENGINE: a Gemini model name against the claude
-# engine reaches Anthropic and comes back 404.
-COMPLETIONS_MODEL_NAME=
+# Comment this out entirely to take the engine's default model. An empty
+# assignment is NOT the same as unset: the library forwards the empty string
+# and the provider rejects it ("model: String should have at least 1
+# character"). A value here must also belong to COMPLETIONS_ENGINE — a Gemini
+# model name against the claude engine reaches Anthropic and returns 404.
+# COMPLETIONS_MODEL_NAME=
 EMBEDDING_MODEL_NAME=gemini-embedding-001
 
 

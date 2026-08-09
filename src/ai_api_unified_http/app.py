@@ -19,12 +19,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .__version__ import __version__ as service_version
 from .auth import ApiKeyAuthMiddleware, verify_auth_configured
+from .config import load_env_file
 from .cost import (
     apply_default_middleware_config,
     attach_cost_handler,
     verify_cost_capture,
 )
-from .errors import EXCEPTION_HANDLERS
+from .errors import EXCEPTION_HANDLERS, ErrorEnvelopeMiddleware
 from .logging_setup import configure_logging
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
@@ -56,7 +57,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     library's `emit_cost_topic` without telling the service, where capture
     would attach to a topic nothing publishes to.
     """
-    # Logging first, so every decision below is visible in the log rather than
+    # The env file first: everything below reads configuration, and the
+    # library resolves its settings from os.environ, which nothing else
+    # populates from the file.
+    load_env_file()
+
+    # Logging next, so every decision below is visible in the log rather than
     # discarded by an unconfigured root logger.
     level: int = configure_logging()
     logging.getLogger(__name__).info(
@@ -93,7 +99,12 @@ def create_app() -> FastAPI:
     # after auth in order to wrap it. A 401 raised by auth has to carry CORS
     # headers, or a browser caller sees an opaque network error instead of the
     # 401 body telling it the key was missing.
+    # Nesting, outermost first: CORS, error envelope, auth, routes.
+    # add_middleware prepends, so these are registered inside-out. The envelope
+    # sits inside CORS so its responses still carry CORS headers, and outside
+    # auth so a bug there is enveloped too.
     app.add_middleware(ApiKeyAuthMiddleware)
+    app.add_middleware(ErrorEnvelopeMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),

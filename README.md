@@ -1,4 +1,4 @@
-# ai-api-unified-http 0.8.0
+# ai-api-unified-http 0.8.1
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One
@@ -29,9 +29,21 @@ cp env_template .env    # or start from scratch
 ```
 
 `make env` refuses to overwrite an existing `.env`. Provider variable names are
-identical to the library's, so a `.env` that works there works here unchanged —
-review `COMPLETIONS_MODEL_NAME` after copying, since a model name from a
-different engine reaches the wrong provider and returns 404.
+identical to the library's, so a `.env` that works there works here unchanged.
+
+Two things to check after copying:
+
+- **`COMPLETIONS_MODEL_NAME` must belong to `COMPLETIONS_ENGINE`.** A Gemini
+  model name against the `claude` engine reaches Anthropic and returns 404.
+- **Comment the line out entirely to use the engine's default.** An empty
+  assignment is not the same as unset: the value is forwarded as an empty
+  string and the provider rejects it.
+
+The service loads `.env` at startup. Real environment variables always win, so
+a deployment injecting its own configuration is never overridden by a file left
+in the image. The library reads `.env` for its own settings through
+pydantic-settings; the service loads it so its own `HTTP_*` variables are read
+too, which pydantic-settings does not do.
 
 Variable names in `.env` are identical to the ai-api-unified library's, so a
 `.env` that works for the library works here unchanged. See the comments in
