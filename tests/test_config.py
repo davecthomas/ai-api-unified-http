@@ -3,10 +3,8 @@
 """
 Nothing else reads the env file.
 
-The library resolves settings from `os.environ`, so a `.env` on disk is inert
-until something puts it there. Skipping that step is why a repo holding valid
-provider keys still failed every call with "ANTHROPIC_API_KEY environment
-variable must be set".
+The library resolves the service's own settings from `os.environ`, so a `.env`
+on disk is inert until something puts them there.
 """
 
 import os
@@ -91,13 +89,12 @@ def test_an_empty_assignment_is_applied_as_empty(tmp_path: Path) -> None:
 
 
 def test_service_owned_variables_reach_os_environ(tmp_path: Path) -> None:
-    """The reason this module exists.
+    """Service-owned variables must reach `os.environ`, not just a settings model.
 
-    The library reads `.env` for its own settings through pydantic-settings,
-    but that populates its settings model rather than `os.environ`. The
-    service reads its own variables from `os.environ` directly, so without
-    this load a `.env` holding HTTP_API_KEYS leaves the service with no keys
-    configured.
+    The library reads `.env` through pydantic-settings, which populates its
+    own model. The service reads its variables from `os.environ` directly, so
+    a `.env` holding HTTP_API_KEYS leaves the service with no keys configured
+    unless the file is loaded here.
     """
     from ai_api_unified_http.auth import API_KEYS_ENV, load_api_keys
 

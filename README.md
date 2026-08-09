@@ -5,9 +5,8 @@ Python library, for web apps and other non-Python consumers. One
 implementation of provider logic, pricing, model lifecycle, and middleware —
 exposed over REST, with TypeScript clients generated from the OpenAPI spec.
 
-Status: **the full v1 surface is live.** Every documented endpoint calls the
-library; nothing returns `501` any more.
-See [docs/requirements.md](docs/requirements.md) for scope and
+Status: **the full v1 surface is live** — every documented endpoint calls the
+library. See [docs/requirements.md](docs/requirements.md) for scope and
 [docs/technical-design.md](docs/technical-design.md) for the architecture and
 the endpoint-to-library mapping.
 
@@ -43,10 +42,7 @@ The service loads `.env` at startup. Real environment variables always win, so
 a deployment injecting its own configuration is never overridden by a file left
 in the image. The library reads `.env` for its own settings through
 pydantic-settings; the service loads it so its own `HTTP_*` variables are read
-too, which pydantic-settings does not do.
-
-Variable names in `.env` are identical to the ai-api-unified library's, so a
-`.env` that works for the library works here unchanged. See the comments in
+too, which pydantic-settings does not do. See the comments in
 [`env_template`](env_template) for every supported variable.
 
 ### Authentication
@@ -75,9 +71,9 @@ curl -H "Authorization: Bearer $KEY" http://localhost:8080/v1/models
 Health has to answer load balancers that hold no credential, and the OpenAPI
 document is what the TypeScript client is generated from.
 
-Authentication runs as middleware rather than a per-route dependency, so a new
-route is protected by existing. `HTTP_AUTH_DISABLED=1` turns it off for local
-work; the service starts with a warning that every caller can spend credits.
+Authentication runs as middleware, so a new route is protected the moment it
+exists. `HTTP_AUTH_DISABLED=1` turns it off for local work; the service starts
+with a warning that every caller can spend credits.
 
 ### Middleware profile
 
@@ -149,15 +145,15 @@ do not.
 would mean constructing a client per engine on one request, and construction
 re-reads configuration and makes a network round trip on Gemini.
 
-The response separates two things rather than merging them: `models` is what
-the provider reports as available right now, and `catalog` carries the
+The response reports two things separately. `models` is what the provider
+reports as available right now, and `catalog` carries the
 library's registry entries (lifecycle status, sunset date, replacement,
 pricing). A model can appear in one and not the other, and that difference is
 information — a provider model with no catalog entry is uncatalogued, not
 unpriced-at-zero.
 
-Pricing rates are **strings**, not numbers. They are decimal money values, and
-binary floating point cannot hold them exactly; `0.075` arriving as
+Pricing rates are **strings**. They are decimal money values, and binary
+floating point cannot hold them exactly; `0.075` arriving as
 `0.07499999999999999` would be wrong in a field used to compute cost.
 
 ### Conversations are stateless
@@ -177,12 +173,12 @@ occurred:
 ```
 
 Ordering is yours, because only you know where a new user message belongs
-relative to the previous assistant turn. Echo the token **without parsing
-it**. It carries
-provider-specific content whose shape changes with the engine and the library
+relative to the previous assistant turn. Echo the token **without parsing it**.
+It carries provider-specific content whose shape changes with the engine and
+the library
 version, so reading it would turn a provider's internal representation into
-this service's contract. A token from an older service version is rejected
-with a 400 telling you to start a new conversation.
+this service's contract. A token from an older service version is rejected with
+a 400 telling you to start a new conversation.
 
 ## Versioning
 
@@ -243,8 +239,8 @@ lean wrapper around the library, and so the two version independently.
 Run it beside the service:
 
 ```bash
-make serve                                  # here: service on :8080
-make serve   # in the webapp checkout: console on :3000
+cd path/to/ai-api-unified-http && make serve            # service on :8080
+cd path/to/ai-api-unified-http-webapp && make serve     # console on :3000
 ```
 
 The service admits `http://localhost:3000` through CORS by default;

@@ -262,9 +262,9 @@ class TestModels:
         self, client: TestClient
     ) -> None:
         # The registry keys on the provider vendor ("anthropic") while callers
-        # select an engine ("claude"). Looking up by engine returns nothing, so
-        # the catalog silently came back empty until the lookup searched the
-        # registry's own keys. This uses the real registry deliberately.
+        # select an engine ("claude"), so a lookup by engine matches nothing
+        # and yields an empty catalog. The lookup searches the registry's own
+        # keys instead. Runs against the real registry, not a mock.
         from ai_api_unified_http.routes_v1 import _registry_entry
 
         entry = _registry_entry("claude-haiku-4-5")

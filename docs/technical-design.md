@@ -44,11 +44,11 @@ enforcement, and middleware stay in the library.
 construction re-reads `.env`, re-parses the middleware YAML, and (Gemini only)
 makes a `models.get` network round trip. The service therefore keeps a
 process-wide dict of engine clients keyed by `(engine, model)`, built on first
-use and reused. Verified safe: engine instances hold no per-conversation
-state, provider SDK clients are thread-safe, and the library's mutable
-instance attributes are idempotent lazy caches.
+use and reused. Reuse is safe because engine instances hold no
+per-conversation state, provider SDK clients are thread-safe, and the
+library's mutable instance attributes are idempotent lazy caches.
 
-Implemented in `clients.py`. Two properties below are deliberate choices:
+Implemented in `clients.py`.
 
 - **`model=None` is its own pool entry**, distinct from any named model, even
   when the engine default resolves to that same model. The pool keys on the
@@ -67,24 +67,20 @@ the misconfiguration is fixed succeeds without a restart.
 Implemented in `auth.py`. Provider credentials live only in the service
 environment, so every accepted request spends money the caller never had to
 hold a key for. That inverts the usual risk: an unauthenticated endpoint here
-is an open tab rather than an information leak, which is why auth landed
-before the first live endpoint instead of after.
+is an open tab.
 
 A shared secret in `Authorization: Bearer <key>`, configured through
 `HTTP_API_KEYS` as comma-separated `label:key` entries. Several keys are live
 at once so a caller can be rotated or revoked alone, and the label names the
 calling application in logs. The label authenticates nothing.
 
-Four properties are deliberate:
-
-- **Middleware, not a per-route dependency.** A new route is protected by
-  existing, so adding an endpoint cannot quietly expose paid capacity by
-  forgetting a decorator. A test asserts every `/v1` path in the OpenAPI spec
+- **Enforced as middleware.** A new route is protected the moment it exists,
+  so adding an endpoint cannot quietly expose paid capacity by forgetting a
+  decorator. A test asserts every `/v1` path in the OpenAPI spec
   answers 401 without a key.
 - **CORS wraps auth.** Starlette runs the last-added middleware outermost, so
-  CORS is registered after auth. A 401 has to carry CORS headers, or a browser
-  caller sees an opaque network error instead of the body explaining the key
-  was missing.
+  CORS is registered after auth. A 401 carries CORS headers, which is what
+  lets a browser caller read the body explaining that the key was missing.
 - **`OPTIONS` is never gated.** Browsers do not attach `Authorization` to a
   preflight, so gating it would make every cross-origin call fail before it
   could authenticate.
@@ -92,9 +88,8 @@ Four properties are deliberate:
   so the time taken does not depend on how far the key matched.
 
 Startup raises `AuthNotConfiguredError` when no keys are set and no explicit
-opt-out was given. The failure this prevents is a deployment that simply
-forgot to set keys and therefore serves paid endpoints to anyone who can reach
-the port. `HTTP_AUTH_DISABLED=1` is the deliberate opt-out and logs a warning
+opt-out was given. The failure this prevents is a deployment that never set
+keys and therefore serves paid endpoints to anyone who can reach the port. `HTTP_AUTH_DISABLED=1` is the deliberate opt-out and logs a warning
 on every start.
 
 This is not a user identity system. Keys name calling applications, and the
@@ -114,12 +109,12 @@ Implemented in `conversation_token.py` as `v1.<base64(compact JSON)>`.
 It is deliberately **neither signed nor encrypted**. The content is the
 caller's own conversation replayed back to them, so there is nothing there
 they did not already send or receive. Signing would add key management and
-rotation for no confidentiality gain, and the service would still have to
-treat a decoded token as untrusted input, exactly as it does now.
+rotation for no confidentiality gain, and the service still treats a decoded
+token as untrusted input.
 
-The version prefix buys a clean failure: when the encoding changes, an old
-token is rejected with a message telling the caller to start a new
-conversation, rather than being replayed to a provider as malformed content.
+The version prefix makes an outdated token fail cleanly: when the encoding
+changes, an old token is rejected with a message telling the caller to start a
+new conversation, instead of reaching a provider as malformed content.
 Decoding happens before the client pool is touched, so a bad token costs no
 provider call.
 
@@ -129,8 +124,7 @@ it encodes. The service does not append the previous turn itself, because it
 cannot know where a new user message belongs relative to it — appending would
 turn `[user, assistant, user]` into `[user, user, assistant]` and reorder the
 conversation. Any version-shaped prefix counts as a token attempt, so a token
-from a retired version is rejected with a message instead of reaching a
-provider as literal text.
+from a retired version is rejected with the same clear message.
 
 ## Middleware profile
 
@@ -152,15 +146,15 @@ surface working.
 
 Deployments handling personal data set the flag and accept that streaming
 stops. The choice belongs to whoever configures the deployment, which is why
-it is a profile setting rather than a code path.
+it is a profile setting.
 
 ## Cost-event capture
 
 The library emits one structured log record per call (event type
 `ai_api_call_cost`) on the logger named by its `emit_cost_topic` setting
 (default `ai_api_unified.observability.cost`). At startup the service
-attaches a handler to that topic. Bootstrap ships a JSON-lines file handler;
-the destination is expected to become a metrics pipeline. Streaming calls
+attaches a handler to that topic. The service ships a JSON-lines file
+handler; the destination is expected to become a metrics pipeline. Streaming calls
 emit their cost event when the stream ends, including client-abandoned
 streams (the library handles `GeneratorExit`).
 
@@ -178,25 +172,23 @@ telling the service, where capture would attach to a topic nothing publishes
 to and every event would vanish. There is no opt-out, because hard
 requirement 3 admits none.
 
-The handler holds three properties deliberately:
-
 - **Unknown fields pass through.** Every non-standard attribute on the log
   record is carried into the JSON object; there is no allowlist to update, so
   a field the library adds later survives with no change here.
 - **The topic records at `INFO` regardless of the root logger.** A deployment
   running the root at `WARNING` must not thereby drop every cost event.
-- **A failing sink never raises into the request.** Losing one event is bad;
-  taking down the call that produced it is worse, so write errors route
-  through the logging error path.
+- **A failing sink never raises into the request.** Write errors route
+  through the logging error path, so a broken sink costs one event rather
+  than the call that produced it.
 
 ## API versioning
 
 - **URI major version** (`/v1/`): bumps only on breaking changes to request
   or response shapes. `/v1` and `/v2` may serve side by side during a
   migration window.
-- **Service version** (semver, `0.1.0`): moves with ordinary releases,
-  reported by `/healthz` and the OpenAPI document. See the README for the
-  release process.
+- **Service version** (semver): moves with ordinary releases, reported by
+  `/healthz` and the OpenAPI document. See the README for the release process
+  and the current value.
 - The pinned library version is independent of both and reported by
   `/healthz` so operators can correlate service behavior with library
   releases.
@@ -206,9 +198,9 @@ The handler holds three properties deliberately:
 `config.py` loads `.env` into `os.environ` at startup, and real environment
 variables win over the file.
 
-The division is easy to get wrong. The library reads `.env` for **its**
-settings on its own — `EnvSettings` is a pydantic-settings model declared with
-`env_file=".env"` — but that populates the model, not `os.environ`. The
+The library reads `.env` for **its** settings on its own — `EnvSettings` is a
+pydantic-settings model declared with `env_file=".env"` — but that populates
+the model, not `os.environ`. The
 service's own variables (`HTTP_API_KEYS`, `HTTP_COST_LOG_PATH`,
 `HTTP_CORS_ORIGINS`, `LOG_LEVEL`) are read straight from `os.environ`, so
 without this load a `.env` holding `HTTP_API_KEYS` leaves the service with no
@@ -246,10 +238,9 @@ Every mapped failure returns the same body: `error`, `detail`, `engine`, and
 reported, and never equals the response status — a provider 500 surfaces as a
 502 here.
 
-- **`Retry-After` is not forwarded.** The bootstrap plan called for passing it
-  through on a 429, but `AiProviderRequestError` carries only the status code,
-  not the provider's response headers, so the service has no value to forward.
-  Callers back off on their own schedule.
+- **`Retry-After` is not forwarded** on a 429. `AiProviderRequestError`
+  carries the status code and not the provider's response headers, so the
+  service has no value to pass on. Callers back off on their own schedule.
 - **The token-limit 422 names the fix.** `StructuredResponseTokenLimitError`
   reports `minimum_supported_tokens` for the model, so the detail states the
   floor rather than leaving the caller to bisect `max_response_tokens`.
@@ -260,27 +251,24 @@ collapse the whole table into one 502.
 
 ### Failures outside the library's hierarchy
 
-Two gaps sat outside the table until they showed up in a running service.
+Two failure classes fall outside the table above.
 
 **Missing credentials.** Provider SDKs raise a plain `ValueError` naming the
 variable ("ANTHROPIC_API_KEY environment variable must be set"), which is not
-an `AiProviderError` and so matched no handler. `clients.py` translates it at
+an `AiProviderError` and matches no handler. `clients.py` translates it at
 construction, where the engine is still known, into
 `ProviderNotConfiguredError` → **503**, with the variable name in the detail.
 503 rather than a 4xx because the caller did nothing wrong and retrying will
 not help until an operator acts.
 
-**Everything else.** Anything unclassified reached Starlette's server-error
-handler, which sits *outside* the CORS middleware — so the caller got an HTML
-traceback with no `Access-Control-Allow-Origin` header, and a browser saw an
-opaque network error rather than a reason.
-
-`ErrorEnvelopeMiddleware` closes that. It runs inside CORS and outside the
-routes, so whatever it returns still carries CORS headers, and it converts any
-unhandled exception into the same JSON error shape with a 500. The body never
-carries the traceback: it carries a request id that is also written to the log
-line holding the traceback, so an operator can join the two without the caller
-seeing internals.
+**Everything else.** `ErrorEnvelopeMiddleware` converts any unhandled
+exception into the same JSON error shape with a 500. It runs inside CORS and
+outside the routes, so its responses carry CORS headers; Starlette's own
+server-error handler sits outside CORS, and a response from there reaches a
+browser with no `Access-Control-Allow-Origin` header and no readable reason.
+The body never carries the traceback. It carries a request id that is also
+written to the log line holding the traceback, so an operator can join the two
+without the caller seeing internals.
 
 ## Risks
 

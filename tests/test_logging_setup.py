@@ -65,8 +65,8 @@ def test_configuration_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_an_existing_root_handler_is_adopted_rather_than_doubled() -> None:
-    # uvicorn installs a root handler before the app starts. Adding a second
-    # prints every line twice, which is what shipped before this check.
+    # uvicorn installs a root handler before the app starts, so adding a
+    # second one prints every line twice.
     root = logging.getLogger()
     root.handlers[:] = [logging.StreamHandler()]
 

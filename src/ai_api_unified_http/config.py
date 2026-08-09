@@ -3,8 +3,6 @@
 """
 Environment file loading for the service's own settings.
 
-The split is easy to get wrong, so it is worth stating exactly.
-
 The **library** reads `.env` for its settings on its own: `EnvSettings` is a
 pydantic-settings model declared with `env_file=".env"`, so provider keys and
 engine defaults reach it without help. It populates that model, though — not
