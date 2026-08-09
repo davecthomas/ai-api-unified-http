@@ -18,8 +18,8 @@ record: 2026-08-04.
 ## Hard requirements
 
 1. **The library does not change to support this service.** The service pins a
-   published PyPI release (`ai-api-unified==2.22.0` at bootstrap) and consumes
-   only its public API. Library improvements that would simplify the service
+   published PyPI release (`ai-api-unified==2.22.0`) and consumes only its
+   public API. Library improvements that would simplify the service
    (async streaming, a pluggable cost sink) are tracked as future library work,
    not prerequisites.
 2. **Middleware is service-owned.** One middleware YAML owned by the service
@@ -42,15 +42,18 @@ record: 2026-08-04.
 
 ## v1 scope
 
-| Endpoint | Status at bootstrap |
+| Endpoint | Purpose |
 |---|---|
-| `POST /v1/completions` (buffered and SSE streaming) | 501 scaffold |
-| `POST /v1/structured` | 501 scaffold |
-| `POST /v1/conversations/turn` | 501 scaffold |
-| `POST /v1/embeddings` | 501 scaffold |
-| `POST /v1/tokens/count` | 501 scaffold |
-| `GET /v1/models` (capabilities + pricing + lifecycle) | 501 scaffold |
-| `GET /healthz` | live |
+| `POST /v1/completions` | Text completion, buffered or SSE streaming |
+| `POST /v1/structured` | Schema-validated structured output |
+| `POST /v1/conversations/turn` | One stateless, tool-capable turn |
+| `POST /v1/embeddings` | Embedding vectors |
+| `POST /v1/tokens/count` | Provider-side token count |
+| `GET /v1/models` | Model catalog: pricing and lifecycle |
+| `GET /healthz` | Liveness and versions |
+
+Every path under `/v1` requires a bearer token. `/healthz` and the OpenAPI
+documents do not.
 
 ## Out of scope for v1
 
@@ -59,9 +62,9 @@ record: 2026-08-04.
   need submit/poll job resources and artifact storage (object store + signed
   URLs). Deferred until v1 is proven.
 - **Images and voice** — return bytes/files; same storage decision as video.
-- **Authentication scheme** — v1 bootstrap ships without auth; an internal
-  API-key or org-standard auth layer is required before any non-local
-  deployment. Tracked as the first post-bootstrap task.
+- **Per-user identity and quotas** — API keys name calling applications, not
+  people. Per-user identity, quotas, and per-caller rate limits belong behind
+  an identity provider.
 
 ## Constraints inherited from the library
 

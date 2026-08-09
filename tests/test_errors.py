@@ -20,9 +20,15 @@ from ai_api_unified.ai_provider_exceptions import (
     AiProviderError,
 )
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
-from ai_api_unified_http.errors import EXCEPTION_HANDLERS
+from ai_api_unified_http.errors import (
+    EXCEPTION_HANDLERS,
+    ErrorEnvelopeMiddleware,
+    ProviderNotConfiguredError,
+    missing_variable_from,
+)
 
 
 @pytest.fixture(scope="module")
@@ -69,6 +75,11 @@ _EXCEPTIONS: dict[str, Exception] = {
         minimum_supported_tokens=256,
     ),
     "base": AiProviderError("something else"),
+    "not_configured": ProviderNotConfiguredError(
+        "OPENAI_API_KEY environment variable must be set.",
+        engine="openai",
+        missing_variable="OPENAI_API_KEY",
+    ),
 }
 
 
@@ -142,3 +153,94 @@ def test_subclasses_are_registered_before_their_base() -> None:
     for exception_type in registered[:-1]:
         if issubclass(exception_type, AiProviderError):
             assert registered.index(exception_type) < registered.index(AiProviderError)
+
+
+class TestProviderNotConfigured:
+    """A missing credential is the deployment's problem, not the caller's."""
+
+    def test_missing_variable_is_lifted_from_the_message(self) -> None:
+        # Provider SDKs report this as a plain ValueError naming the variable;
+        # the name is the only actionable part.
+        error = ValueError("ANTHROPIC_API_KEY environment variable must be set.")
+        assert missing_variable_from(error) == "ANTHROPIC_API_KEY"
+
+    def test_a_message_with_no_variable_yields_none(self) -> None:
+        assert missing_variable_from(ValueError("something went wrong")) is None
+
+    def test_maps_to_503_and_names_the_fix(self, client: TestClient) -> None:
+        # 503, not 4xx: the caller did nothing wrong and retrying the same
+        # request will not help until an operator sets the variable.
+        response = client.get("/boom/not_configured")
+        assert response.status_code == 503
+        body = response.json()
+        assert body["error"] == "provider_not_configured"
+        assert "OPENAI_API_KEY" in body["detail"]
+        assert body["engine"] == "openai"
+
+
+class TestErrorEnvelope:
+    """Nothing may leave as a bare 500 with a traceback."""
+
+    @pytest.fixture
+    def enveloped(self) -> TestClient:
+        app = FastAPI()
+        for exception_type, handler in EXCEPTION_HANDLERS:
+            app.add_exception_handler(exception_type, handler)
+        app.add_middleware(ErrorEnvelopeMiddleware)
+
+        @app.get("/kaboom")
+        def kaboom() -> None:
+            raise ValueError("something the service does not classify")
+
+        @app.get("/fine")
+        def fine() -> dict:
+            return {"ok": True}
+
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_an_unclassified_error_becomes_the_service_error_shape(
+        self, enveloped: TestClient
+    ) -> None:
+        response = enveloped.get("/kaboom")
+        assert response.status_code == 500
+        body = response.json()
+        assert set(body) == {"error", "detail", "engine", "provider_status"}
+        assert body["error"] == "internal_error"
+
+    def test_the_traceback_never_reaches_the_caller(
+        self, enveloped: TestClient
+    ) -> None:
+        # The body carries a request id instead, which is also on the log line
+        # holding the traceback.
+        body = enveloped.get("/kaboom").json()
+        assert "Traceback" not in body["detail"]
+        assert "ValueError" not in body["detail"]
+        assert "request_id" in body["detail"]
+
+    def test_successful_requests_pass_through_untouched(
+        self, enveloped: TestClient
+    ) -> None:
+        assert enveloped.get("/fine").json() == {"ok": True}
+
+
+def test_an_unclassified_error_still_carries_cors_headers() -> None:
+    # This is the whole reason the envelope is middleware rather than an
+    # exception handler. Starlette's server-error handler sits outside the CORS
+    # middleware, so a bare 500 reaches a browser with no allow-origin header
+    # and the caller sees an opaque network failure instead of the reason.
+    app = FastAPI()
+    app.add_middleware(ErrorEnvelopeMiddleware)
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["GET"]
+    )
+
+    @app.get("/kaboom")
+    def kaboom() -> None:
+        raise RuntimeError("unclassified")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/kaboom", headers={"Origin": "http://localhost:3000"})
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.json()["error"] == "internal_error"

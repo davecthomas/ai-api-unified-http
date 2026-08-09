@@ -19,6 +19,8 @@ classification reads it directly instead of matching on message text.
 """
 
 import logging
+import re
+import uuid
 from typing import Final
 
 from ai_api_unified import (
@@ -33,10 +35,39 @@ from ai_api_unified.ai_provider_exceptions import (
 )
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 
 from .schemas import ErrorResponse
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
+
+# Provider SDKs report missing credentials as a plain ValueError naming the
+# variable, e.g. "ANTHROPIC_API_KEY environment variable must be set." The name
+# is the actionable part, so it is lifted out and put in the response.
+_ENV_VAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b([A-Z][A-Z0-9_]{4,})\b")
+
+
+class ProviderNotConfiguredError(RuntimeError):
+    """Raised when a provider client cannot be built from the environment.
+
+    Distinct from `AiProviderConfigurationError`, which the library raises for
+    a bad request (a retired model). This one means the deployment is missing
+    configuration, so it is a 503 rather than a 4xx: the caller did nothing
+    wrong and retrying the same request will not help until an operator acts.
+    """
+
+    def __init__(self, message: str, *, engine: str, missing_variable: str | None):
+        super().__init__(message)
+        self.engine: str = engine
+        self.missing_variable: str | None = missing_variable
+
+
+def missing_variable_from(error: Exception) -> str | None:
+    """Extract the environment variable name a provider error complains about."""
+    match = _ENV_VAR_PATTERN.search(str(error))
+    return match.group(1) if match else None
+
 
 # Provider statuses the service re-raises as themselves rather than remapping.
 _RATE_LIMITED: Final[int] = 429
@@ -177,6 +208,27 @@ async def handle_structured_token_limit(
     )
 
 
+async def handle_provider_not_configured(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Map a missing-credential failure onto 503 naming the variable."""
+    assert isinstance(exc, ProviderNotConfiguredError)
+    logger.error(
+        "provider %s is not configured: %s", exc.engine, exc.missing_variable or exc
+    )
+    hint: str = (
+        f" Set {exc.missing_variable} in the service environment."
+        if exc.missing_variable
+        else ""
+    )
+    return _error_response(
+        status_code=503,
+        error_code="provider_not_configured",
+        detail=f"{exc}{hint}",
+        engine=exc.engine,
+    )
+
+
 async def handle_provider_error(request: Request, exc: Exception) -> JSONResponse:
     """Map any remaining library failure onto 502.
 
@@ -194,6 +246,7 @@ async def handle_provider_error(request: Request, exc: Exception) -> JSONRespons
 # Ordered most specific first. FastAPI dispatches on exact exception type and
 # walks the MRO, so the subclasses must be registered before their bases.
 EXCEPTION_HANDLERS: Final[list[tuple[type[Exception], object]]] = [
+    (ProviderNotConfiguredError, handle_provider_not_configured),
     (AiProviderRequestError, handle_provider_request_error),
     (AiProviderConfigurationError, handle_bad_request_error),
     (AiProviderCapabilityUnsupportedError, handle_bad_request_error),
@@ -201,3 +254,45 @@ EXCEPTION_HANDLERS: Final[list[tuple[type[Exception], object]]] = [
     (StructuredResponseTokenLimitError, handle_structured_token_limit),
     (AiProviderError, handle_provider_error),
 ]
+
+
+class ErrorEnvelopeMiddleware(BaseHTTPMiddleware):
+    """Guarantee that every failure leaves as the service's JSON error shape.
+
+    Registered exception handlers cover the failures this service knows how to
+    classify. Anything else — a library `ValueError`, a bug in a route — would
+    otherwise reach Starlette's server-error handler, which sits *outside* the
+    CORS middleware. The result is an HTML traceback with no
+    `Access-Control-Allow-Origin` header, so a browser caller sees an opaque
+    network error and cannot read the reason at all.
+
+    This middleware runs inside CORS and outside the routes, so whatever it
+    returns is still given CORS headers.
+
+    The response body never carries the traceback. It carries a request id that
+    is also written to the log line holding the traceback, so an operator can
+    join the two without the caller ever seeing internals.
+    """
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        """Run the request, converting an unhandled failure into the envelope."""
+        try:
+            return await call_next(request)
+        except Exception:
+            request_id: str = uuid.uuid4().hex[:12]
+            logger.exception(
+                "unhandled error serving %s %s [request_id=%s]",
+                request.method,
+                request.url.path,
+                request_id,
+            )
+            body = ErrorResponse(
+                error="internal_error",
+                detail=(
+                    f"The service failed to handle this request. Quote "
+                    f"request_id {request_id} when reporting it."
+                ),
+            )
+            return JSONResponse(status_code=500, content=body.model_dump())

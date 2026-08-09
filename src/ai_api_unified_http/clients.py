@@ -21,9 +21,11 @@ harmless because clients carry no state worth preserving.
 """
 
 import threading
-from typing import Final
+from typing import Any, Final
 
 from ai_api_unified import AIBaseCompletions, AIBaseEmbeddings, AIFactory
+
+from .errors import ProviderNotConfiguredError, missing_variable_from
 
 # Key is (engine, model); model is None when the caller accepts the engine
 # default, which is a distinct pool entry from any named model.
@@ -54,8 +56,11 @@ def get_completions_client(engine: str, model: str | None = None) -> AIBaseCompl
     if cached is not None:
         return cached
 
-    built: AIBaseCompletions = AIFactory.get_ai_completions_client(
-        model_name=model, completions_engine=engine
+    built: AIBaseCompletions = _build(
+        AIFactory.get_ai_completions_client,
+        engine,
+        model_name=model,
+        completions_engine=engine,
     )
     with _pool_lock:
         # setdefault keeps whichever client won the race; both are equivalent.
@@ -82,12 +87,43 @@ def get_embeddings_client(engine: str, model: str | None = None) -> AIBaseEmbedd
     if cached is not None:
         return cached
 
-    built: AIBaseEmbeddings = AIFactory.get_ai_embedding_client(
-        embedding_engine=engine, model_name=model
+    built: AIBaseEmbeddings = _build(
+        AIFactory.get_ai_embedding_client,
+        engine,
+        embedding_engine=engine,
+        model_name=model,
     )
     with _pool_lock:
         client: AIBaseEmbeddings = _embeddings_pool.setdefault(key, built)
     return client
+
+
+def _build(factory: Any, engine: str, **kwargs: Any) -> Any:
+    """Construct a client, translating a missing-credential failure.
+
+    Provider SDKs report an absent key as a plain `ValueError`, which is
+    outside the library's exception hierarchy and so would escape every
+    handler and surface as a bare 500. Translating it here keeps the
+    classification at the point where the engine is known.
+
+    Args:
+        factory: The AIFactory constructor to call.
+        engine: Engine token, for the error message.
+        **kwargs: Constructor arguments.
+
+    Returns:
+        Any: The constructed client.
+
+    Raises:
+        ProviderNotConfiguredError: When the environment lacks a credential
+            the provider requires.
+    """
+    try:
+        return factory(**kwargs)
+    except (ValueError, KeyError) as error:
+        raise ProviderNotConfiguredError(
+            str(error), engine=engine, missing_variable=missing_variable_from(error)
+        ) from error
 
 
 def pool_sizes() -> dict[str, int]:

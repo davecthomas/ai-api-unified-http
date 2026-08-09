@@ -53,9 +53,8 @@ def _write_profile(tmp_path: Path, *, observability: bool, emit_cost: bool) -> s
 class TestVerifyCostCapture:
     """Both halves must hold: the library must emit, and something must listen.
 
-    Checking only the listener is how this service shipped a startup gate that
-    passed while recording nothing, because the library's emit_cost defaults
-    to false.
+    Checking only the listener passes while nothing is recorded, because the
+    library's emit_cost defaults to false and it then publishes to no one.
     """
 
     def test_fails_when_observability_middleware_is_off(
