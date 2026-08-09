@@ -20,6 +20,10 @@ LOG_LEVEL=INFO
 # test web app (make webapp); deployments set their real web app origins.
 # HTTP_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
+# --- Cost attribution ---
+# Nothing to configure. Callers split spend below the API key by sending
+# X-Caller-Id, and optionally X-Session-Id and X-Workflow-Id, on each request.
+
 # --- Rate limiting (guards provider spend) ---
 # Requests allowed per API key per window. The count is per worker process, so
 # the effective ceiling is this times WEB_CONCURRENCY. 0 disables it.

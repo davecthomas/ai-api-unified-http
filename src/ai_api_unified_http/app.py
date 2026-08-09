@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .__version__ import __version__ as service_version
 from .auth import ApiKeyAuthMiddleware, verify_auth_configured
+from .caller_context import CallerContextMiddleware
 from .config import load_env_file
 from .cost import (
     apply_default_middleware_config,
@@ -112,11 +113,16 @@ def create_app() -> FastAPI:
     # after auth in order to wrap it. A 401 raised by auth has to carry CORS
     # headers, or a browser caller sees an opaque network error instead of the
     # 401 body telling it the key was missing.
-    # Nesting, outermost first: CORS, error envelope, auth, rate limit, routes.
+    # Nesting, outermost first: CORS, error envelope, auth, rate limit,
+    # caller context, routes.
     # add_middleware prepends, so these are registered inside-out. The envelope
     # sits inside CORS so its responses still carry CORS headers, and outside
     # auth so a bug there is enveloped too. The limiter sits inside auth
     # because it counts against the key's label, which auth resolves.
+    # Caller context is innermost of the four, so the identifiers it sets are
+    # in place for the route and reset once the response is done. It needs the
+    # API key label that auth resolves, so it cannot run before auth.
+    app.add_middleware(CallerContextMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(ApiKeyAuthMiddleware)
     app.add_middleware(ErrorEnvelopeMiddleware)
