@@ -109,6 +109,29 @@ string token in the turn response; clients store and echo it untouched. The
 token's encoding is a service implementation detail and may change between
 service versions — clients must never parse it.
 
+Implemented in `conversation_token.py` as `v1.<base64(compact JSON)>`.
+
+It is deliberately **neither signed nor encrypted**. The content is the
+caller's own conversation replayed back to them, so there is nothing there
+they did not already send or receive. Signing would add key management and
+rotation for no confidentiality gain, and the service would still have to
+treat a decoded token as untrusted input, exactly as it does now.
+
+The version prefix buys a clean failure: when the encoding changes, an old
+token is rejected with a message telling the caller to start a new
+conversation, rather than being replayed to a provider as malformed content.
+Decoding happens before the client pool is touched, so a bad token costs no
+provider call.
+
+Tokens are decoded **in place**, wherever the caller put them: an assistant
+message whose content matches `v<digits>.` is expanded to the provider content
+it encodes. The service does not append the previous turn itself, because it
+cannot know where a new user message belongs relative to it — appending would
+turn `[user, assistant, user]` into `[user, user, assistant]` and reorder the
+conversation. Any version-shaped prefix counts as a token attempt, so a token
+from a retired version is rejected with a message instead of reaching a
+provider as literal text.
+
 ## Middleware profile, and the streaming/redaction conflict
 
 The library reads one process-wide middleware YAML from
