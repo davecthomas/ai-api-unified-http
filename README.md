@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.0.0
+# ai-api-unified-http 1.2.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -230,6 +230,45 @@ endpoints or fields, major for breaking deploy or config changes.
 
 Releases are cut on `main` after merge: tag `vX.Y.Z` and push. A release
 deploys the service; there is no PyPI publish step.
+
+## TypeScript client
+
+The service describes itself at `/openapi.json`: every endpoint, every field
+you can send, every field that comes back. A tool reads that description and
+writes the TypeScript for you. That is what "generated" means here — nobody
+types the request and response shapes by hand, so they cannot disagree with the
+service.
+
+Whoever calls the API gets an editor that knows the field names:
+
+```js
+// hand-written: nothing checks this, and the typo ships
+fetch("/v1/completions", { body: JSON.stringify({ engine: "claude", promt: "hi" }) });
+
+// generated: the typo is an error before the code runs
+client.raw.POST("/v1/completions", { body: { engine: "claude", promt: "hi" } });
+```
+
+Responses work the same way. `data.text` autocompletes because the tool read
+the spec and knows the field exists.
+
+[`clients/typescript`](clients/typescript) holds the client.
+
+```ts
+const client = createAiApiClient({ baseUrl, apiKey, caller: { callerId: "user-42" } });
+const { data, error } = await client.raw.POST("/v1/completions", {
+  body: { engine: "claude", prompt: "Name three primary colors." },
+});
+```
+
+```bash
+make client         # regenerate after changing any request or response shape
+```
+
+CI regenerates the spec and the client on every pull request and fails when the
+committed output has moved, so the client cannot fall behind the service.
+Streaming is hand-written, because server-sent events are outside what OpenAPI
+describes.
 
 ## Browser console
 

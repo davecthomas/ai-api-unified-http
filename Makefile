@@ -14,7 +14,7 @@ DEV_ENV = HTTP_API_KEYS="local:$(DEV_API_KEY)"
 # Sibling checkouts to copy a working .env from, in preference order.
 ENV_SOURCES = ../ai_api_unified/.env ../sample_ai_api_unified/.env
 
-.PHONY: help install lint test serve smoke env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs
+.PHONY: help install lint test serve smoke env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs client
 
 help:
 	@echo "env          copy a working .env from a sibling ai_api_unified checkout"
@@ -24,6 +24,7 @@ help:
 	@echo "serve        run the service on http://localhost:$(PORT) (reload on edit)"
 	@echo "             local API key: $(DEV_API_KEY)  (override with DEV_API_KEY=...)"
 	@echo "smoke        live checks against a running server on port $(PORT)"
+	@echo "client       regenerate the TypeScript client from the OpenAPI spec"
 	@echo ""
 	@echo "  Google Cloud Run (all take PROJECT=<project-id>)"
 	@echo "gcp-project  create the project, link BILLING=<account-id>, enable APIs"
@@ -81,6 +82,14 @@ smoke:
 	@echo "tokens:       HTTP $$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$(PORT)/v1/tokens/count -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{"engine":"claude","model":"claude-haiku-4-5","prompt":"hi"}') (expect 200)"
 	@echo "smoke OK"
 
+
+# Regenerate the TypeScript client. The spec comes from the app object rather
+# than a running server, so this needs no port and no provider keys. CI runs
+# the same steps and fails when the committed output has moved.
+client:
+	poetry run python scripts/dump_openapi.py clients/typescript/openapi.json
+	cd clients/typescript && npm install --silent && npm run generate && npm run typecheck
+	@echo "client regenerated; commit clients/typescript if it changed"
 
 # --- Google Cloud Run -------------------------------------------------------
 #
