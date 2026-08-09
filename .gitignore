@@ -36,3 +36,6 @@ build/
 
 # Bootstrap cost-event sink (HTTP_COST_LOG_PATH default)
 cost-events.jsonl
+
+# TypeScript client dependencies
+node_modules/

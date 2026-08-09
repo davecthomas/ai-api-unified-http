@@ -1,0 +1,35 @@
+{
+  "name": "@davecthomas/ai-api-unified-http-client",
+  "version": "1.0.0",
+  "description": "Typed TypeScript client for ai-api-unified-http, generated from its OpenAPI spec.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "openapi.json",
+    "README.md",
+    "smoke.ts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davecthomas/ai-api-unified-http.git",
+    "directory": "clients/typescript"
+  },
+  "scripts": {
+    "generate": "openapi-typescript ./openapi.json -o ./src/schema.ts",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node --experimental-strip-types smoke.ts"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.13.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.4.0",
+    "typescript": "^5.6.0"
+  }
+}

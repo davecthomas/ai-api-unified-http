@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.0.0
+# ai-api-unified-http 1.2.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -230,6 +230,28 @@ endpoints or fields, major for breaking deploy or config changes.
 
 Releases are cut on `main` after merge: tag `vX.Y.Z` and push. A release
 deploys the service; there is no PyPI publish step.
+
+## TypeScript client
+
+[`clients/typescript`](clients/typescript) holds a typed client generated from
+this service's OpenAPI document. Nothing in it describes a request or response
+by hand.
+
+```ts
+const client = createAiApiClient({ baseUrl, apiKey, caller: { callerId: "user-42" } });
+const { data, error } = await client.raw.POST("/v1/completions", {
+  body: { engine: "claude", prompt: "Name three primary colors." },
+});
+```
+
+```bash
+make client         # regenerate after changing any request or response shape
+```
+
+CI regenerates the spec and the client on every pull request and fails when the
+committed output has moved, so the client cannot fall behind the service.
+Streaming is hand-written, because server-sent events are outside what OpenAPI
+describes.
 
 ## Browser console
 

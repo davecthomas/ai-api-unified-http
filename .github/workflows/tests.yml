@@ -23,3 +23,37 @@ jobs:
           poetry run black --check .
       - name: Test
         run: poetry run pytest -q
+
+  # The TypeScript client is generated from the OpenAPI document. This job
+  # regenerates both and fails when the committed output has moved, so the
+  # client cannot silently fall behind the service it describes.
+  client-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Install dependencies
+        run: poetry install --extras dev
+      - name: Regenerate the spec and the client
+        run: |
+          poetry run python scripts/dump_openapi.py clients/typescript/openapi.json
+          cd clients/typescript
+          npm ci
+          npm run generate
+      - name: Typecheck the client
+        run: cd clients/typescript && npm run typecheck
+      - name: Fail if the committed client has drifted
+        run: |
+          if ! git diff --exit-code -- clients/typescript/openapi.json clients/typescript/src/schema.ts; then
+            echo ""
+            echo "The committed client no longer matches the service's OpenAPI document."
+            echo "Regenerate it and commit the result:  make client"
+            exit 1
+          fi
