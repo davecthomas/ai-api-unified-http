@@ -132,48 +132,27 @@ conversation. Any version-shaped prefix counts as a token attempt, so a token
 from a retired version is rejected with a message instead of reaching a
 provider as literal text.
 
-## Middleware profile, and the streaming/redaction conflict
+## Middleware profile
 
 The library reads one process-wide middleware YAML from
-`AI_MIDDLEWARE_CONFIG_PATH`. The service ships two, and defaults the variable
-to the first when it is unset:
+`AI_MIDDLEWARE_CONFIG_PATH`. The service ships `config/middleware.yaml` and
+defaults the variable to it when unset, so a stock deployment starts with
+observability and cost emission already on.
 
-One profile ships, `config/middleware.yaml`, and it enables observability with
-cost emission and leaves PII redaction off.
+PII redaction is off in that profile. The library refuses to stream while
+redaction is enabled, because redaction cannot be guaranteed across chunk
+boundaries, and the profile is process-wide with no per-call override — so a
+deployment gets one or the other. The default keeps the whole documented
+surface working.
 
 | `pii_redaction.enabled` | Buffered | Streaming |
 |---|---|---|
-| `false` (shipped default) | works, unredacted | works |
+| `false` (shipped default) | works | works |
 | `true` | works, redacted | 400 carrying the library's explanation |
 
-Two documented rules collide here, and live testing is what surfaced it:
-
-- Hard requirement 2 puts *every* call through PII redaction.
-- The inherited constraints say the streaming endpoint is unredacted and
-  callers needing redaction use the buffered one — which presumes streaming
-  runs.
-
-The library refuses to do both. With redaction enabled it raises
-`AiProviderCapabilityUnsupportedError` on any streaming call:
-
-> Streaming completions are unavailable while PII redaction middleware is
-> enabled: redaction cannot be guaranteed across stream chunk boundaries.
-
-Because the profile is process-wide, one deployment gets redaction or
-streaming, never both, and no per-call override exists in the library.
-
-The shipped default leaves redaction off, so every endpoint including the
-streaming one works without configuration. That trades hard requirement 2's
-"every call is redacted" for a service whose documented surface all functions,
-and it makes the constraints section literally true: the streaming endpoint is
-unredacted and callers needing redaction use the buffered one — with redaction
-turned on. A deployment handling personal data enables the flag and accepts
-that streaming stops.
-
-A deployment that needs both is blocked on upstream library work — per-call
-middleware selection, or redaction that buffers chunk boundaries. Until then
-the choice belongs to whoever configures the deployment, which is why it is a
-profile rather than a code path.
+Deployments handling personal data set the flag and accept that streaming
+stops. The choice belongs to whoever configures the deployment, which is why
+it is a profile setting rather than a code path.
 
 ## Cost-event capture
 

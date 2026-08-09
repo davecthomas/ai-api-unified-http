@@ -21,23 +21,12 @@ middleware:
       include_provider_usage: true
       emit_error_events: true
 
-  # PII redaction is OFF by default, and that is a deliberate choice rather
-  # than an oversight.
+  # PII redaction, off by default so the streaming endpoint works.
   #
-  # The library refuses to stream while redaction is enabled, because redaction
-  # cannot be guaranteed across chunk boundaries:
-  #
-  #   "Streaming completions are unavailable while PII redaction middleware is
-  #    enabled: redaction cannot be guaranteed across stream chunk boundaries."
-  #
-  # The profile is process-wide with no per-call override, so a deployment gets
-  # redaction or streaming, never both. The default keeps every endpoint
-  # working, including the streaming one.
-  #
-  # A deployment handling personal data flips `enabled` to true below and
-  # accepts that /v1/completions with stream=true then returns 400 carrying the
-  # library's explanation. docs/technical-design.md, "Middleware profile",
-  # covers the trade in full.
+  # The library will not stream while redaction is enabled, and this profile is
+  # process-wide with no per-call override, so a deployment gets one or the
+  # other. Set `enabled: true` when handling personal data and accept that
+  # /v1/completions with stream=true then returns 400.
   - name: pii_redaction
     enabled: false
     settings:

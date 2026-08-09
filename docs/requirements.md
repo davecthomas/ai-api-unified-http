@@ -22,9 +22,11 @@ record: 2026-08-04.
    only its public API. Library improvements that would simplify the service
    (async streaming, a pluggable cost sink) are tracked as future library work,
    not prerequisites.
-2. **Middleware is preserved.** Every call through the service passes through
-   the library's PII redaction and observability middleware, configured by one
-   middleware YAML owned by the service deployment.
+2. **Middleware is service-owned.** One middleware YAML owned by the service
+   deployment configures the library's observability and PII redaction for
+   every call. Observability with cost emission is on in the shipped profile;
+   PII redaction is a per-deployment choice, off by default so the streaming
+   endpoint works, since the library will not stream while redaction is on.
 3. **Cost events reach a durable destination.** The library emits per-call cost
    events as log records on the `ai_api_unified.observability.cost` logger.
    The service attaches a logging handler to that topic and forwards events to
@@ -64,8 +66,8 @@ record: 2026-08-04.
 ## Constraints inherited from the library
 
 - Streaming and PII redaction are mutually exclusive: the library raises when
-  both are enabled. The streaming endpoint is therefore unredacted; callers
-  needing redaction use the buffered endpoint.
+  both are enabled. A deployment that turns redaction on loses streaming, and
+  callers needing redaction use the buffered endpoint.
 - Bedrock engines have no async support and no per-call timeout.
 - Each active SSE stream occupies one threadpool thread until the library
   gains async streaming; concurrency ceiling = threadpool size x workers.
