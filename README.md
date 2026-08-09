@@ -12,27 +12,28 @@ mapping.
 
 ## Where this sits
 
-```
-   browser / web app
-          │  fetch + SSE, Authorization: Bearer <key>
-          ▼
-  ┌───────────────────────── Google Cloud ──────────────────────────┐
-  │                                                                 │
-  │   Cloud Run service  ai-api-unified-http                        │
-  │   ├─ scales to zero, wakes in seconds                           │
-  │   ├─ auth → rate limit → routes                                 │
-  │   └─ image built by Cloud Build, kept in Artifact Registry      │
-  │            │                       ▲                            │
-  │            │ in-process import     │ provider keys, mounted at  │
-  │            ▼                       │ runtime, never in the image│
-  │   ┌──────────────────┐     ┌───────┴────────┐                   │
-  │   │  ai-api-unified  │     │ Secret Manager │                   │
-  │   └────────┬─────────┘     └────────────────┘                   │
-  │            │  cost events → stdout → Cloud Logging              │
-  └────────────┼────────────────────────────────────────────────────┘
-               │  provider SDKs, over the public internet
-               ▼
-     Anthropic · OpenAI · Google · Bedrock · Voyage
+```mermaid
+flowchart TB
+    client["Browser / web app"]
+
+    subgraph gcp["Google Cloud"]
+        run["<b>ai-api-unified-http</b><br/>this repo, on Cloud Run<br/>auth → rate limit → caller context → routes"]
+        lib["ai-api-unified"]
+        secrets["Secret Manager"]
+        logs["Cloud Logging"]
+        build["Cloud Build → Artifact Registry"]
+    end
+
+    providers["Anthropic · OpenAI · Google · Bedrock · Voyage"]
+
+    client -->|"fetch + SSE, Bearer key"| run
+    run -->|"in-process import"| lib
+    secrets -->|"provider keys"| run
+    lib -->|"cost events"| logs
+    build -.->|"image"| run
+    lib --> providers
+
+    style run stroke-width:4px
 ```
 
 The service is a thin adapter. Provider logic, pricing, lifecycle enforcement,
