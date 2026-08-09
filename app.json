@@ -1,0 +1,46 @@
+{
+  "name": "ai-api-unified-http",
+  "description": "HTTP interface to the ai-api-unified Python library. Deploys into your own Google Cloud project, using your own provider keys.",
+  "env": {
+    "HTTP_API_KEYS": {
+      "description": "Comma-separated API keys callers present as 'Authorization: Bearer <key>'. Each entry is label:key. Generate one with: openssl rand -hex 32",
+      "required": true
+    },
+    "ANTHROPIC_API_KEY": {
+      "description": "Anthropic key, for the 'claude' engine. Leave blank if unused.",
+      "required": false
+    },
+    "OPENAI_API_KEY": {
+      "description": "OpenAI key, for the 'openai' engine. Leave blank if unused.",
+      "required": false
+    },
+    "GOOGLE_GEMINI_API_KEY": {
+      "description": "Google Gemini key, for the 'google-gemini' engine. Leave blank if unused.",
+      "required": false
+    },
+    "COMPLETIONS_ENGINE": {
+      "description": "Default completions engine when a request omits one.",
+      "value": "claude"
+    },
+    "HTTP_RATE_LIMIT": {
+      "description": "Requests per key per window, per worker. Guards provider spend. 0 disables it.",
+      "value": "60"
+    },
+    "HTTP_CORS_ORIGINS": {
+      "description": "Comma-separated browser origins allowed to call this service.",
+      "value": "http://localhost:3000"
+    },
+    "LOG_LEVEL": {
+      "description": "Service log level.",
+      "value": "INFO"
+    }
+  },
+  "options": {
+    "allow-unauthenticated": true,
+    "memory": "512Mi",
+    "cpu": "1",
+    "concurrency": 40,
+    "max-instances": 3,
+    "timeout": "3600"
+  }
+}

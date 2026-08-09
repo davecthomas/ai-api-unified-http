@@ -8,11 +8,15 @@ full v1 surface the TypeScript client is generated from.
 Per-endpoint behavior lives in the endpoint's own test module.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 
-def test_healthz_reports_versions(client: TestClient) -> None:
-    response = client.get("/healthz")
+@pytest.mark.parametrize("path", ["/healthz", "/health"])
+def test_health_reports_versions(client: TestClient, path: str) -> None:
+    # Two paths because Cloud Run's frontend answers /healthz itself and never
+    # forwards it to the container, so a deployment there needs /health.
+    response = client.get(path)
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"

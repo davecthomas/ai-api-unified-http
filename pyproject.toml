@@ -1,7 +1,7 @@
 [project]
 name = "ai_api_unified_http"
 
-version = "0.8.1" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
+version = "1.0.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
 description = "HTTP service exposing ai-api-unified to non-Python apps"
 authors = [{ name = "Dave Thomas", email = "davidcthomas@gmail.com" }]
 license = "MIT"
@@ -20,6 +20,9 @@ dependencies = [
     # import belongs in the direct dependencies.
     "python-dotenv (>=1.0,<2.0)",
     "uvicorn[standard] (>=0.30,<1.0)",
+    # Production server. docs/technical-design.md specifies gunicorn with
+    # uvicorn workers; the container runs it, so it is a runtime dependency.
+    "gunicorn (>=22.0,<24.0)",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,44 @@
+# Docker build context, which is NOT filtered by .gitignore.
+#
+# `docker build` ships this whole directory to the daemon, so a COPY would
+# otherwise pull .env into an image layer that anyone able to pull the image
+# can read. Git never sees the file; the image would.
+
+# Secrets and local configuration
+.env
+.env.*
+*.pem
+*.key
+config/*.local.yaml
+
+# Version control and CI
+.git
+.gitignore
+.github
+.githooks
+
+# Local agent and editor state
+.agents
+.codex
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Python build and test artifacts. The image installs from the lockfile, so a
+# host virtualenv would only bloat it and could carry the wrong architecture.
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+htmlcov
+.coverage
+
+# Not needed at runtime
+tests
+docs
+Makefile
+README.md
+cost-events.jsonl

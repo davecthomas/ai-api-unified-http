@@ -193,6 +193,32 @@ requirement 3 admits none.
   `/healthz` so operators can correlate service behavior with library
   releases.
 
+## Deployment
+
+The service ships as a container. `Dockerfile` builds a virtualenv in a builder
+stage and copies it into a slim runtime that carries no build toolchain, no
+Poetry, and no source for the tests or docs. It runs gunicorn with uvicorn
+workers, as the stack section describes, and listens on `PORT`.
+
+`.dockerignore` is load-bearing rather than tidiness. `docker build` ships the
+whole directory as build context and `.gitignore` does not apply to it, so
+without the exclusion a `.env` would land in an image layer readable by anyone
+who can pull the image.
+
+Cloud Run is the configured target. `make gcp-secrets` writes provider keys to
+Secret Manager and grants the runtime service account access; `make gcp-deploy`
+builds with Cloud Build, so no local Docker daemon is involved. Secrets mount
+at runtime, so no key appears in the image or in the service's stored
+environment.
+
+One Cloud Run behavior shapes the code: **its frontend answers `/healthz`
+itself and never forwards the request to the container.** The service therefore
+serves the same health body at `/health`, which Cloud Run does not reserve.
+
+Rate limiting is sized against the deploy: the counter is per process, so the
+deploy target sets `WEB_CONCURRENCY=1` to keep the configured limit meaning
+what it says.
+
 ## Configuration loading
 
 `config.py` loads `.env` into `os.environ` at startup, and real environment
