@@ -1,0 +1,76 @@
+# Publish the TypeScript client to npm.
+#
+# Authentication is npm Trusted Publishing over OIDC, so there is no NPM_TOKEN
+# in this repository. GitHub mints a short-lived, workflow-scoped credential
+# that cannot be reused elsewhere, and npm records the publisher as GitHub
+# Actions rather than a person.
+#
+# Before this can run, two things must exist:
+#
+#   1. The package must already be on npm. Trusted publishing cannot create a
+#      package that does not exist yet, because the setting lives in the
+#      package's own settings page. The first publish is manual; see
+#      clients/typescript/README.md.
+#   2. A trusted publisher must be configured on npmjs.com for this repository
+#      and this exact filename, publish-client.yml.
+#
+# Trigger it by pushing a tag shaped client-v1.2.3, so publishing is a
+# deliberate act rather than a side effect of merging.
+
+name: publish client
+
+on:
+  push:
+    tags:
+      - "client-v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC; without it npm cannot verify the publisher
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted publishing needs Node 22.14+ and npm 11.5.1+.
+          node-version: "22.14"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Use an npm new enough for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install
+        working-directory: clients/typescript
+        run: npm ci
+
+      - name: Verify the client matches the committed spec
+        working-directory: clients/typescript
+        run: |
+          npm run generate
+          git diff --exit-code -- openapi.json src/schema.ts \
+            || (echo "client is stale; run 'make client' and commit" && exit 1)
+
+      - name: Build
+        working-directory: clients/typescript
+        run: npm run build
+
+      # The tag names the version being published, so a tag that disagrees
+      # with package.json would publish something other than what it claims.
+      - name: Check the tag matches package.json
+        working-directory: clients/typescript
+        run: |
+          tag="${GITHUB_REF_NAME#client-v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag client-v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+          echo "publishing version $pkg"
+
+      - name: Publish
+        working-directory: clients/typescript
+        run: npm publish

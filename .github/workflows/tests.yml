@@ -47,8 +47,11 @@ jobs:
           cd clients/typescript
           npm ci
           npm run generate
-      - name: Typecheck the client
-        run: cd clients/typescript && npm run typecheck
+      - name: Typecheck and build the client
+        run: |
+          cd clients/typescript
+          npm run typecheck
+          npm run build
       - name: Fail if the committed client has drifted
         run: |
           if ! git diff --exit-code -- clients/typescript/openapi.json clients/typescript/src/schema.ts; then
