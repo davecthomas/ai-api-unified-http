@@ -79,6 +79,48 @@ await client.raw.POST("/v1/completions", {
 });
 ```
 
+## Publishing
+
+Authentication is npm Trusted Publishing over OIDC, so this repository holds no
+npm token. GitHub mints a short-lived credential scoped to one workflow, and
+npm records the publisher as GitHub Actions.
+
+The first publish cannot use it. Trusted publishing is configured in a
+package's own settings page, and that page does not exist until the package
+does, so version one goes up by hand:
+
+```bash
+cd clients/typescript
+npm login                 # prompts for 2FA
+npm run build
+npm publish               # publishConfig.access is public, required for a scoped name
+```
+
+Then configure the trusted publisher at
+`npmjs.com/package/@davecthomas/ai-api-unified-http-client/access`:
+
+| Field | Value |
+|---|---|
+| Organization or user | `davecthomas` |
+| Repository | `ai-api-unified-http` |
+| Workflow filename | `publish-client.yml` |
+| Allowed actions | `npm publish` |
+
+Every publish after that is a tag:
+
+```bash
+# bump version in package.json first, then
+git tag client-v1.2.1 && git push origin client-v1.2.1
+```
+
+The workflow refuses to publish when the tag and `package.json` disagree, so a
+tag cannot claim a version the package does not carry.
+
+**Your npm account email becomes public when you publish.** It appears in the
+registry's `maintainers` field, which anyone can read. Trusted publishing keeps
+your address out of the per-version publisher record, and does nothing about
+`maintainers`. Use an address you are willing to make public.
+
 ## Regenerate
 
 From the repository root, after changing the service's shapes:

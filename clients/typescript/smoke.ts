@@ -2,11 +2,14 @@
 //
 // Run with the service up:  npm run smoke
 //
+// It imports from dist/, so it exercises the built artifact a consumer
+// installs rather than the TypeScript source.
+//
 // This is deliberately a real call rather than a mock. The point of generating
 // the client is that its types match the service, and only a real round trip
 // proves the generated shapes and the wire format agree.
 
-import { createAiApiClient } from "./src/index.ts";
+import { createAiApiClient } from "./dist/index.js";
 
 const baseUrl = process.env.API_BASE ?? "http://localhost:8080";
 const apiKey = process.env.API_KEY ?? "local-dev-key";

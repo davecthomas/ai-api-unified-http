@@ -39,3 +39,6 @@ cost-events.jsonl
 
 # TypeScript client dependencies
 node_modules/
+
+# Built TypeScript client output
+clients/typescript/dist/

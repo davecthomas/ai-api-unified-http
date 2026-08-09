@@ -13,9 +13,9 @@
 // for.
 
 import createClient from "openapi-fetch";
-import type { paths } from "./schema.ts";
+import type { paths } from "./schema.js";
 
-export type { paths, components } from "./schema.ts";
+export type { paths, components } from "./schema.js";
 
 /** Request and response bodies, named for the endpoints they belong to. */
 export type CompletionRequest =
