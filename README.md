@@ -10,7 +10,7 @@ Every documented endpoint is live. See
 [docs/technical-design.md](docs/technical-design.md) for the endpoint-to-library
 mapping.
 
-## Where this sits
+## Architecture
 
 ```mermaid
 flowchart TB
@@ -67,8 +67,9 @@ configuration is never overridden. Deployments ship no `.env` — see
 ### Authentication
 
 Every `/v1` endpoint spends provider credits, and callers never hold provider
-keys, so an unauthenticated endpoint is an open tab. The service refuses to
-start unless authentication is configured or explicitly turned off.
+keys, so an unauthenticated endpoint lets anyone spend against your provider
+account. The service refuses to start unless authentication is configured or
+explicitly turned off.
 
 `HTTP_API_KEYS` takes comma-separated entries, each `label:key` or a bare
 `key`. The label names the calling application in logs and authenticates
@@ -91,7 +92,7 @@ warns on every start that any caller can spend credits.
 
 `HTTP_RATE_LIMIT` caps requests per key per window, defaulting to 60 per 60
 seconds. Authentication answers who may call; this answers how much they may
-spend, which matters because a leaked key otherwise runs up an unbounded bill.
+spend. A leaked key otherwise runs up an unbounded bill.
 
 The count lives in process memory, so it is per worker: the effective ceiling
 is the limit times `WEB_CONCURRENCY`. Size it accordingly, or set
@@ -109,7 +110,7 @@ Both belong to the library, configured by one YAML at
 [library README](https://github.com/davecthomas/ai-api-unified) documents what
 that profile can contain.
 
-The service adds two behaviors on top:
+The service adds two behaviors:
 
 - **It refuses to start when cost events would be lost.** The library emits one
   event per call, and `emit_cost` defaults to false, so a profile without it
@@ -138,9 +139,8 @@ completions, the model catalog, and a malformed-body 422.
 
 ## Deploy
 
-Deploys to Google Cloud Run, into **your own** project with **your own**
-provider keys. The image is a plain container, so any container host will run
-it.
+Deploys to Google Cloud Run, into your own project with your own provider
+keys. The image is a plain container, so any container host will run it.
 
 Scales to zero, wakes in seconds, and the always-free tier covers 2M requests
 and 180k vCPU-seconds a month. A billing account is required even inside the
@@ -167,8 +167,8 @@ service's environment configuration.
 
 `make gcp-deploy` builds with Cloud Build, so no local Docker is needed.
 
-**Cloud Run answers `/healthz` at its own frontend and never forwards it to the
-container.** Use `/health` for health checks there; both paths return the same
+Cloud Run answers `/healthz` at its own frontend and never forwards it to the
+container. Use `/health` for health checks there; both paths return the same
 body everywhere else.
 
 ## API surface
@@ -189,8 +189,8 @@ body everywhere else.
 on one request, and construction re-reads configuration and makes a network
 round trip on Gemini.
 
-The response reports two things separately. `models` is what the provider says
-is available now; `catalog` is the library's registry — lifecycle status,
+`models` and `catalog` are reported separately. `models` is what the provider
+says is available now; `catalog` is the library's registry — lifecycle status,
 sunset date, replacement, pricing. A model can appear in one and not the other,
 and a provider model with no catalog entry is uncatalogued, which is not the
 same as free.
@@ -267,16 +267,15 @@ make client         # regenerate after changing any request or response shape
 ```
 
 CI regenerates the spec and the client on every pull request and fails when the
-committed output has moved, so the client cannot fall behind the service.
-Streaming is hand-written, because server-sent events are outside what OpenAPI
-describes.
+committed output has moved. Streaming is hand-written, because server-sent
+events are outside what OpenAPI describes.
 
 ## Browser console
 
 [ai-api-unified-http-webapp](https://github.com/davecthomas/ai-api-unified-http-webapp)
 drives every endpoint from editable inputs, renders SSE as it arrives, and
-holds conversation history in the page. It is a separate repo so this one stays
-a lean wrapper, and so the two version independently.
+holds conversation history in the page. It is a separate repo so this one holds
+only the service, and so the two version independently.
 
 ```bash
 cd path/to/ai-api-unified-http        && make serve   # service on :8080
