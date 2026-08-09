@@ -8,6 +8,7 @@ unlisted path, and a preflight.
 
 import logging
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,6 +43,21 @@ def _auth(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
+@pytest.fixture
+def pooled():
+    """Patch the pool so a request that clears auth does not reach a provider.
+
+    Every v1 endpoint is live, so proving a key was accepted means letting the
+    request run — but not out to the network.
+    """
+    fake = MagicMock()
+    fake.count_tokens = MagicMock(return_value=7)
+    with patch(
+        "ai_api_unified_http.routes_v1.get_completions_client", return_value=fake
+    ):
+        yield fake
+
+
 def test_v1_request_without_a_key_is_401(client: TestClient) -> None:
     response = client.post("/v1/completions", json={"engine": "claude", "prompt": "hi"})
     assert response.status_code == 401
@@ -54,18 +70,17 @@ def test_401_names_the_scheme(client: TestClient) -> None:
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_a_configured_key_passes_through(client: TestClient) -> None:
-    # A scaffolded route keeps this about auth: 501 means the request reached
-    # the handler. A live route would drag provider behavior into the check.
+def test_a_configured_key_passes_through(client: TestClient, pooled: MagicMock) -> None:
     response = client.post(
         "/v1/tokens/count",
         json={"engine": "claude", "prompt": "hi"},
         headers=_auth(GOOD_KEY),
     )
-    assert response.status_code == 501
+    # 200 means the request reached the handler rather than being turned away.
+    assert response.status_code == 200
 
 
-def test_every_configured_key_works(client: TestClient) -> None:
+def test_every_configured_key_works(client: TestClient, pooled: MagicMock) -> None:
     # Multiple keys exist so callers can be rotated and revoked one at a time.
     for key in (GOOD_KEY, OTHER_KEY):
         response = client.post(
@@ -73,7 +88,7 @@ def test_every_configured_key_works(client: TestClient) -> None:
             json={"engine": "claude", "prompt": "hi"},
             headers=_auth(key),
         )
-        assert response.status_code == 501
+        assert response.status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -97,13 +112,15 @@ def test_malformed_or_wrong_credentials_are_rejected(
     assert response.status_code == 401
 
 
-def test_bearer_value_is_whitespace_tolerant(client: TestClient) -> None:
+def test_bearer_value_is_whitespace_tolerant(
+    client: TestClient, pooled: MagicMock
+) -> None:
     response = client.post(
         "/v1/tokens/count",
         json={"engine": "claude", "prompt": "hi"},
         headers={"Authorization": f"Bearer  {GOOD_KEY}  "},
     )
-    assert response.status_code == 501
+    assert response.status_code == 200
 
 
 @pytest.mark.parametrize("path", ["/healthz", "/openapi.json"])
@@ -166,7 +183,9 @@ def test_authorization_header_is_allowed_by_cors(client: TestClient) -> None:
     assert "authorization" in allowed
 
 
-def test_disabled_auth_serves_without_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_disabled_auth_serves_without_a_key(
+    monkeypatch: pytest.MonkeyPatch, pooled: MagicMock
+) -> None:
     monkeypatch.setenv(auth.AUTH_DISABLED_ENV, "1")
     monkeypatch.delenv(auth.API_KEYS_ENV, raising=False)
     client = TestClient(create_app())
@@ -174,7 +193,7 @@ def test_disabled_auth_serves_without_a_key(monkeypatch: pytest.MonkeyPatch) -> 
     response = client.post(
         "/v1/tokens/count", json={"engine": "claude", "prompt": "hi"}
     )
-    assert response.status_code == 501
+    assert response.status_code == 200
 
 
 class TestKeyParsing:

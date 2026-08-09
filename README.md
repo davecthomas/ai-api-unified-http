@@ -1,13 +1,12 @@
-# ai-api-unified-http 0.6.0
+# ai-api-unified-http 0.7.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One
 implementation of provider logic, pricing, model lifecycle, and middleware —
 exposed over REST, with TypeScript clients generated from the OpenAPI spec.
 
-Status: **in progress**. `/v1/completions` (buffered and streaming),
-`/v1/structured`, and `/v1/conversations/turn` are live. `/v1/embeddings`,
-`/v1/tokens/count`, and `/v1/models` still return `501 Not Implemented`.
+Status: **the full v1 surface is live.** Every documented endpoint calls the
+library; nothing returns `501` any more.
 See [docs/requirements.md](docs/requirements.md) for scope and
 [docs/technical-design.md](docs/technical-design.md) for the architecture and
 the endpoint-to-library mapping.
@@ -136,13 +135,30 @@ Then:
 | POST | `/v1/completions` | Text completion; `"stream": true` for SSE | **live** |
 | POST | `/v1/structured` | Schema-validated structured output | **live** |
 | POST | `/v1/conversations/turn` | One stateless tool-capable conversation turn | **live** |
-| POST | `/v1/embeddings` | Embedding vectors | 501 |
-| POST | `/v1/tokens/count` | Provider-side token count | 501 |
-| GET | `/v1/models` | Model catalog: capabilities, pricing, lifecycle | 501 |
+| POST | `/v1/embeddings` | Embedding vectors | **live** |
+| POST | `/v1/tokens/count` | Provider-side token count | **live** |
+| GET | `/v1/models?engine=` | Model catalog: lifecycle and pricing | **live** |
 | GET | `/healthz` | Liveness and versions | live |
 
 Every `/v1` path requires a bearer token; `/healthz` and the OpenAPI documents
 do not.
+
+### Model catalog
+
+`GET /v1/models` requires an `engine` query parameter. Listing every engine
+would mean constructing a client per engine on one request, and construction
+re-reads configuration and makes a network round trip on Gemini.
+
+The response separates two things rather than merging them: `models` is what
+the provider reports as available right now, and `catalog` carries the
+library's registry entries (lifecycle status, sunset date, replacement,
+pricing). A model can appear in one and not the other, and that difference is
+information — a provider model with no catalog entry is uncatalogued, not
+unpriced-at-zero.
+
+Pricing rates are **strings**, not numbers. They are decimal money values, and
+binary floating point cannot hold them exactly; `0.075` arriving as
+`0.07499999999999999` would be wrong in a field used to compute cost.
 
 ### Conversations are stateless
 

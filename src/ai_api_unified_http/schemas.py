@@ -182,6 +182,88 @@ class TokenCountRequest(EngineSelection):
     prompt: str
 
 
+class EmbeddingVector(BaseModel):
+    """One input's embedding, paired with the index of the input it came from.
+
+    The index is explicit rather than positional-by-convention so a caller can
+    reorder or filter without losing the mapping back to their inputs.
+    """
+
+    index: int
+    embedding: list[float]
+
+
+class EmbeddingsResponse(BaseModel):
+    vectors: list[EmbeddingVector]
+    engine: str
+    model: str | None = None
+    dimensions: int | None = Field(
+        default=None, description="Length of each vector, when any were returned."
+    )
+
+
+class TokenCountResponse(BaseModel):
+    token_count: int = Field(description="Provider-side count for the prompt.")
+    engine: str
+    model: str | None = None
+
+
+class TokenRates(BaseModel):
+    """Per-million-token prices.
+
+    Serialized as strings, not floats. These are decimal money values, and
+    binary floating point cannot represent them exactly — a rate of 0.075
+    becoming 0.07499999999999999 in JSON would be wrong in a field callers may
+    use to compute or display cost.
+    """
+
+    input_per_1m: str
+    output_per_1m: str | None = None
+    cached_input_per_1m: str | None = None
+
+
+class ModelPricing(BaseModel):
+    unit: str
+    currency: str
+    effective_date: str
+    source: str
+    confidence: str
+    token_rates: TokenRates | None = None
+    notes: str | None = None
+
+
+class ModelInfo(BaseModel):
+    """Catalog entry for one model.
+
+    `status` and `sunset_date` are the fields worth reading before pinning a
+    model: the library refuses retired models outright, and a deprecated one
+    names its replacement.
+    """
+
+    provider: str
+    model: str
+    status: str = Field(description="One of: active, deprecated, retired.")
+    sunset_date: str | None = None
+    recommended_replacement: str | None = None
+    pricing: ModelPricing | None = None
+
+
+class ModelsResponse(BaseModel):
+    """Model catalog for one engine.
+
+    `models` lists what the provider reports as available right now.
+    `catalog` carries the library's registry entries — lifecycle and pricing —
+    which cover models the provider may not list and omit models the registry
+    has not catalogued. The two are reported separately rather than merged,
+    because a model missing from one is a different fact than a model missing
+    from the other.
+    """
+
+    engine: str
+    models: list[str]
+    catalog: list[ModelInfo]
+
+
 class NotImplementedResponse(BaseModel):
     """Body returned by every endpoint that is scaffolded but not yet live."""
 
