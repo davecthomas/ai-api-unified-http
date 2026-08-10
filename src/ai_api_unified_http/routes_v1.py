@@ -3,14 +3,16 @@
 """
 v1 API routes.
 
-Every model-invoking endpoint returns HTTP 501 until its implementation
-lands; the request schemas are real so the OpenAPI spec and generated
-TypeScript client are stable from day one. The endpoint-to-library-call
-mapping lives in docs/technical-design.md.
+Each endpoint adapts one library call: it selects a pooled client, translates
+the request, and shapes the result. Provider behaviour, retries, and pricing
+belong to the library. The endpoint-to-library-call mapping lives in
+docs/technical-design.md.
 """
 
 import logging
 from collections.abc import Iterator
+from decimal import Decimal
+from functools import partial
 from typing import Any
 
 from ai_api_unified import (
@@ -78,6 +80,39 @@ def _usage(usage: Any) -> TokenUsage:
         cached_input_tokens=usage.cached_input_tokens,
         total_tokens=usage.total_tokens,
     )
+
+
+def _usd_cost(client: Any, usage: Any) -> str | None:
+    """Price measured usage, or return None when the model has no rates.
+
+    The library's `compute_completion_cost` answers 0.0 for a model with no
+    pricing on record, which a caller cannot tell from a call that genuinely
+    cost nothing. The rates are read directly instead, so an unpriced model
+    reports null and a priced one reports a figure that means what it says.
+
+    `compute_token_cost` treats cached input tokens as a subset of the input
+    count, so the non-cached remainder is what it is given.
+
+    Args:
+        client: The pooled client that served the call, carrying the rates.
+        usage: The library's token usage for the call.
+
+    Returns:
+        str | None: The exact decimal cost as a string, or None when the model
+            carries no token rates.
+    """
+    pricing: Any = getattr(getattr(client, "capabilities", None), "pricing", None)
+    if pricing is None or getattr(pricing, "token_rates", None) is None:
+        return None
+
+    cached: int = usage.cached_input_tokens or 0
+    non_cached: int = max((usage.input_tokens or 0) - cached, 0)
+    cost: Decimal = pricing.compute_token_cost(
+        input_tokens=non_cached,
+        output_tokens=usage.output_tokens or 0,
+        cached_input_tokens=cached,
+    )
+    return str(cost)
 
 
 def _tools(tools: list[Any] | None) -> list[AITool] | None:
@@ -156,7 +191,9 @@ def _registry_entry(model: str) -> Any | None:
     return None
 
 
-async def _embed_batch(client: Any, inputs: list[str]) -> list[dict[str, Any]]:
+async def _embed_batch(
+    client: Any, inputs: list[str], input_type: str | None = None
+) -> list[dict[str, Any]]:
     """Embed a batch, falling back to the sync call when async is unsupported.
 
     The batch call is used rather than one call per input: N single calls would
@@ -171,17 +208,21 @@ async def _embed_batch(client: Any, inputs: list[str]) -> list[dict[str, Any]]:
     Args:
         client: Pooled embeddings client.
         inputs: Texts to embed.
+        input_type: What the text is for, forwarded unchanged. Engines that do
+            not distinguish query from document ignore it.
 
     Returns:
         list[dict[str, Any]]: One provider result per input.
     """
     try:
-        return await client.agenerate_embeddings_batch(inputs)
+        return await client.agenerate_embeddings_batch(inputs, input_type=input_type)
     except AiProviderCapabilityUnsupportedError:
         logger.info(
             "engine has no async embeddings; using the sync call in the threadpool"
         )
-        return await run_in_threadpool(client.generate_embeddings_batch, inputs)
+        return await run_in_threadpool(
+            partial(client.generate_embeddings_batch, inputs, input_type=input_type)
+        )
 
 
 # Keys providers use for the vector in an embeddings result.
@@ -405,6 +446,7 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
         data=result.data,
         finish_reason=result.finish_reason.value,
         usage=_usage(result.usage),
+        usd_cost=_usd_cost(client, result.usage),
         raw_text=result.raw_text,
         engine=request.engine,
         model=request.model,
@@ -457,6 +499,7 @@ async def conversation_turn(
         ],
         finish_reason=turn.finish_reason.value,
         usage=_usage(turn.usage),
+        usd_cost=_usd_cost(client, turn.usage),
         conversation_token=encode_conversation_token(turn.raw_content),
         engine=request.engine,
         model=request.model,
@@ -485,7 +528,9 @@ async def embeddings(request: EmbeddingsRequest) -> EmbeddingsResponse:
         raise HTTPException(status_code=400, detail="inputs must not be empty.")
 
     client = get_embeddings_client(request.engine, request.model)
-    results: list[dict[str, Any]] = await _embed_batch(client, request.inputs)
+    results: list[dict[str, Any]] = await _embed_batch(
+        client, request.inputs, request.input_type
+    )
 
     vectors: list[EmbeddingVector] = [
         EmbeddingVector(index=index, embedding=_vector_from(result))

@@ -54,7 +54,9 @@ class TestEmbeddings:
         # for one request.
         _, fake = pooled
         client.post("/v1/embeddings", json={"engine": "openai", "inputs": ["a", "b"]})
-        fake.agenerate_embeddings_batch.assert_awaited_once_with(["a", "b"])
+        fake.agenerate_embeddings_batch.assert_awaited_once_with(
+            ["a", "b"], input_type=None
+        )
 
     def test_empty_inputs_is_400_before_any_provider_call(
         self, client: TestClient, pooled: tuple
@@ -105,7 +107,7 @@ class TestEmbeddings:
 
         assert response.status_code == 200
         assert response.json()["vectors"][0]["embedding"] == [9.0, 8.0]
-        fake.generate_embeddings_batch.assert_called_once_with(["a"])
+        fake.generate_embeddings_batch.assert_called_once_with(["a"], input_type=None)
 
     def test_other_capability_errors_still_surface(self, client: TestClient) -> None:
         # The fallback covers "no async", not every capability failure: a sync

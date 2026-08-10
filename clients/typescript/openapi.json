@@ -32,6 +32,7 @@
             "title": "Model"
           },
           "prompt": {
+            "maxLength": 200000,
             "title": "Prompt",
             "type": "string"
           },
@@ -55,6 +56,7 @@
           "system_prompt": {
             "anyOf": [
               {
+                "maxLength": 50000,
                 "type": "string"
               },
               {
@@ -128,6 +130,7 @@
               "additionalProperties": true,
               "type": "object"
             },
+            "maxItems": 500,
             "title": "Messages",
             "type": "array"
           },
@@ -155,6 +158,7 @@
             "title": "Request Timeout Seconds"
           },
           "system_prompt": {
+            "maxLength": 50000,
             "title": "System Prompt",
             "type": "string"
           },
@@ -247,6 +251,18 @@
           },
           "usage": {
             "$ref": "#/components/schemas/TokenUsage"
+          },
+          "usd_cost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero \u2014 null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.",
+            "title": "Usd Cost"
           }
         },
         "required": [
@@ -286,11 +302,24 @@
             "title": "Engine",
             "type": "string"
           },
+          "input_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the text is for, typically 'query' or 'document'. Voyage and Gemini embed a search query differently from a stored document, so a retrieval index built without this and searched with it returns worse matches. Forwarded to the provider unchanged; engines that do not use it ignore it.",
+            "title": "Input Type"
+          },
           "inputs": {
             "description": "Texts to embed; one vector per input.",
             "items": {
               "type": "string"
             },
+            "maxItems": 256,
             "title": "Inputs",
             "type": "array"
           },
@@ -609,6 +638,7 @@
                   "additionalProperties": true,
                   "type": "object"
                 },
+                "maxItems": 500,
                 "type": "array"
               },
               {
@@ -632,6 +662,7 @@
           "prompt": {
             "anyOf": [
               {
+                "maxLength": 200000,
                 "type": "string"
               },
               {
@@ -660,6 +691,7 @@
           "system_prompt": {
             "anyOf": [
               {
+                "maxLength": 50000,
                 "type": "string"
               },
               {
@@ -719,6 +751,18 @@
           },
           "usage": {
             "$ref": "#/components/schemas/TokenUsage"
+          },
+          "usd_cost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero \u2014 null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.",
+            "title": "Usd Cost"
           }
         },
         "required": [
@@ -750,6 +794,7 @@
             "title": "Model"
           },
           "prompt": {
+            "maxLength": 200000,
             "title": "Prompt",
             "type": "string"
           }
@@ -979,7 +1024,7 @@
   "info": {
     "description": "HTTP interface to the ai-api-unified Python library. Breaking API changes bump the URI version (/v1 -> /v2); the service itself follows semantic versioning independently.",
     "title": "ai-api-unified-http",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "openapi": "3.1.0",
   "paths": {

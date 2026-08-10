@@ -5,8 +5,8 @@ API-key authentication.
 
 Provider credentials live only in the service environment, so every request
 this service accepts spends money that the caller never had to hold a key for.
-That inverts the usual risk: an unauthenticated endpoint here is not an
-information leak, it is an open tab.
+That inverts the usual risk: an unauthenticated endpoint here leaks no
+information and instead lets anyone spend against the deployment's account.
 
 The scheme is a shared secret in `Authorization: Bearer <key>`. Multiple keys
 are supported so callers can be revoked and rotated one at a time, and each
@@ -27,6 +27,13 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
+from .paths import PUBLIC_PATHS
+from .rate_limit import (
+    count_unauthenticated,
+    rate_limit,
+    too_many_requests,
+    window_seconds,
+)
 from .schemas import ErrorResponse
 
 # Comma-separated keys. Each entry is either "key" or "label:key"; the label is
@@ -37,20 +44,16 @@ API_KEYS_ENV: Final[str] = "HTTP_API_KEYS"
 # localhost and requiring a key would mean pasting one into the test page.
 AUTH_DISABLED_ENV: Final[str] = "HTTP_AUTH_DISABLED"
 
-# Paths served without a key. /healthz must answer load balancers that hold no
-# credential. The OpenAPI documents carry no secrets and are what the
-# TypeScript client is generated from, so gating them would break codegen for
-# every consumer that does not already have a key.
-PUBLIC_PATHS: Final[frozenset[str]] = frozenset(
-    {
-        "/healthz",
-        "/health",
-        "/openapi.json",
-        "/docs",
-        "/docs/oauth2-redirect",
-        "/redoc",
-    }
-)
+__all__ = [
+    "API_KEYS_ENV",
+    "AUTH_DISABLED_ENV",
+    "PUBLIC_PATHS",
+    "ApiKeyAuthMiddleware",
+    "AuthNotConfiguredError",
+    "auth_disabled",
+    "load_api_keys",
+    "verify_auth_configured",
+]
 
 _BEARER_PREFIX: Final[str] = "Bearer "
 
@@ -124,10 +127,17 @@ def _match_key(presented: str, keys: dict[str, str]) -> str | None:
 
     Comparison uses `hmac.compare_digest` against every configured key so the
     time taken does not depend on how far along the key matched.
+
+    Both sides are encoded first. `compare_digest` refuses two `str` arguments
+    when either holds a character outside ASCII, and header values arrive
+    decoded from raw bytes, so a caller could otherwise put one byte above 0x7f
+    in the header and raise `TypeError` out of the authenticator. Encoding
+    makes that byte an ordinary non-match.
     """
+    presented_bytes: bytes = presented.encode("utf-8", "surrogateescape")
     matched: str | None = None
     for secret, label in keys.items():
-        if hmac.compare_digest(presented, secret):
+        if hmac.compare_digest(presented_bytes, secret.encode("utf-8")):
             matched = label
     return matched
 
@@ -154,18 +164,43 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         header: str = request.headers.get("authorization", "")
         if not header.startswith(_BEARER_PREFIX):
-            return _unauthorized("Missing bearer token.")
+            return _refuse(request, "Missing bearer token.")
 
         presented: str = header[len(_BEARER_PREFIX) :].strip()
         label: str | None = _match_key(presented, load_api_keys())
         if label is None:
             logger.warning("rejected request to %s: unknown key", request.url.path)
-            return _unauthorized("Unknown API key.")
+            return _refuse(request, "Unknown API key.")
 
         # Downstream handlers and logs identify the caller by label; the key
         # itself is never stored on the request or written anywhere.
         request.state.api_key_label = label
         return await call_next(request)
+
+
+def _refuse(request: Request, detail: str) -> JSONResponse:
+    """Refuse a request that presented no usable key, counting it first.
+
+    `RateLimitMiddleware` runs inside this one, because it keys on the label
+    resolved here, so a request refused here never reaches the counter. Without
+    counting, a caller holding no key can retry without bound: every attempt
+    costs a log line, and on a metered log sink that is the caller spending the
+    deployment's money without ever authenticating.
+
+    Once the address is over budget the answer becomes 429 rather than 401.
+    Both refuse the request; the 429 also tells the caller when to stop.
+
+    Args:
+        request: The request being refused.
+        detail: Why the key was not accepted.
+
+    Returns:
+        JSONResponse: A 401, or a 429 once the caller is over budget.
+    """
+    allowed, resets_in = count_unauthenticated(request)
+    if not allowed:
+        return too_many_requests(rate_limit(), window_seconds(), resets_in)
+    return _unauthorized(detail)
 
 
 def _unauthorized(detail: str) -> JSONResponse:

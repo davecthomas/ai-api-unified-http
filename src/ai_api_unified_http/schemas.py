@@ -3,15 +3,27 @@
 """
 Request and response schemas for the v1 API.
 
-These models exist from the first commit so the OpenAPI spec — and the
-TypeScript client generated from it — carries real request shapes even
-while endpoints still return 501. Field names mirror the ai-api-unified
-call signatures they will map onto (see docs/technical-design.md).
+These models are the published contract: the OpenAPI document is generated
+from them, and the TypeScript client from that. Field names mirror the
+ai-api-unified call signatures they map onto (see docs/technical-design.md).
 """
 
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, Field
+
+# Ceilings on caller-supplied collections and text.
+#
+# These are part of the API contract rather than deployment configuration, and
+# deliberately so: they appear in the OpenAPI document, which is published and
+# is what the TypeScript client is generated from. A limit that varied per
+# deployment would make the spec, and therefore the generated client,
+# deployment-specific. `HTTP_MAX_REQUEST_BYTES` is the tunable ceiling; these
+# bound the shape.
+MAX_PROMPT_CHARS: Final[int] = 200_000
+MAX_SYSTEM_PROMPT_CHARS: Final[int] = 50_000
+MAX_EMBEDDING_INPUTS: Final[int] = 256
+MAX_CONVERSATION_MESSAGES: Final[int] = 500
 
 
 class EngineSelection(BaseModel):
@@ -27,8 +39,8 @@ class EngineSelection(BaseModel):
 
 
 class CompletionRequest(EngineSelection):
-    prompt: str
-    system_prompt: str | None = None
+    prompt: str = Field(max_length=MAX_PROMPT_CHARS)
+    system_prompt: str | None = Field(default=None, max_length=MAX_SYSTEM_PROMPT_CHARS)
     max_response_tokens: int | None = None
     request_timeout_seconds: float | None = None
     stream: bool = Field(
@@ -55,14 +67,26 @@ class CompletionResponse(BaseModel):
 
 
 class StructuredRequest(EngineSelection):
-    prompt: str | None = None
-    messages: list[dict[str, Any]] | None = None
-    system_prompt: str | None = None
+    prompt: str | None = Field(default=None, max_length=MAX_PROMPT_CHARS)
+    messages: list[dict[str, Any]] | None = Field(
+        default=None, max_length=MAX_CONVERSATION_MESSAGES
+    )
+    system_prompt: str | None = Field(default=None, max_length=MAX_SYSTEM_PROMPT_CHARS)
     response_schema: dict[str, Any] = Field(
         description="JSON schema the completion must validate against."
     )
     max_response_tokens: int | None = None
     request_timeout_seconds: float | None = None
+
+
+USD_COST_DESCRIPTION: Final[str] = (
+    "Cost of this call in USD, priced from the usage above, or null when the "
+    "model carries no token rates in the registry. A string for the same "
+    "reason the rates are strings: these are decimal money values, and binary "
+    "floating point cannot hold them exactly. Null is not zero — null means "
+    "the price is unknown, and a call that genuinely cost nothing reports a "
+    "numeric zero."
+)
 
 
 class TokenUsage(BaseModel):
@@ -95,6 +119,7 @@ class StructuredResponse(BaseModel):
         description="One of: complete, length, tool_use, refusal."
     )
     usage: TokenUsage
+    usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
     raw_text: str = Field(
         description="Model output before parsing, for diagnosing a null data field."
     )
@@ -130,6 +155,7 @@ class ConversationTurnResponse(BaseModel):
         description="One of: complete, length, tool_use, refusal."
     )
     usage: TokenUsage
+    usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
     conversation_token: str | None = Field(
         default=None,
         description=(
@@ -152,8 +178,9 @@ class ToolSchema(BaseModel):
 
 
 class ConversationTurnRequest(EngineSelection):
-    system_prompt: str
+    system_prompt: str = Field(max_length=MAX_SYSTEM_PROMPT_CHARS)
     messages: list[dict[str, Any]] = Field(
+        max_length=MAX_CONVERSATION_MESSAGES,
         description=(
             "Full conversation history; the service holds no state between "
             "turns. Replay a previous assistant turn by placing its "
@@ -162,7 +189,7 @@ class ConversationTurnRequest(EngineSelection):
             '{"role": "assistant", "content": "<conversation_token>"}. '
             "Ordering is yours, because only you know where a new user "
             "message belongs relative to it."
-        )
+        ),
     )
     tools: list[ToolSchema] | None = None
     tool_choice: str | None = None
@@ -175,11 +202,24 @@ class EmbeddingsRequest(BaseModel):
         description="Embeddings engine token, e.g. 'openai', 'google-gemini', 'voyage'."
     )
     model: str | None = None
-    inputs: list[str] = Field(description="Texts to embed; one vector per input.")
+    inputs: list[str] = Field(
+        max_length=MAX_EMBEDDING_INPUTS,
+        description="Texts to embed; one vector per input.",
+    )
+    input_type: str | None = Field(
+        default=None,
+        description=(
+            "What the text is for, typically 'query' or 'document'. Voyage and "
+            "Gemini embed a search query differently from a stored document, "
+            "so a retrieval index built without this and searched with it "
+            "returns worse matches. Forwarded to the provider unchanged; "
+            "engines that do not use it ignore it."
+        ),
+    )
 
 
 class TokenCountRequest(EngineSelection):
-    prompt: str
+    prompt: str = Field(max_length=MAX_PROMPT_CHARS)
 
 
 class EmbeddingVector(BaseModel):

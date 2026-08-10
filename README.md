@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.3.0
+# ai-api-unified-http 1.4.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -102,6 +102,32 @@ which this does not provide.
 Responses carry `X-RateLimit-Limit` and `X-RateLimit-Remaining`; a 429 adds
 `Retry-After`.
 
+Requests that fail authentication are counted too, against the caller's
+address, and answer 429 once that address is over budget. They never reach the
+per-key counter, so without this a caller holding no key could retry without
+limit and spend the deployment's log budget doing it.
+
+The address comes from the socket by default. Behind a proxy that is the
+proxy, putting every caller in one bucket, so set `HTTP_CLIENT_IP_FROM_XFF=1`
+to read `X-Forwarded-For` instead. Only its last entry is read, because a
+proxy appends the address it accepted the connection from and everything
+earlier is whatever the client sent. `make gcp-deploy` sets this.
+
+### Request size
+
+`HTTP_MAX_REQUEST_BYTES` caps the request body, defaulting to 1 MiB, and a
+larger one is refused with 413 before the body is read. The rate limiter
+bounds how often a caller spends and says nothing about how much any one call
+costs, so without this a single request can cost more than the rest of the
+window put together.
+
+A request that arrives chunked declares no length and passes this check; the
+per-field limits in the OpenAPI document still apply once it is parsed. Those
+limits — 200,000 characters for a prompt, 256 embedding inputs, 500 messages —
+are part of the published contract rather than deployment configuration, since
+the generated client is built from that document and would otherwise differ
+per deployment.
+
 ### Cost attribution per end user
 
 An API key identifies a calling *application*, so a web app serving a thousand
@@ -123,10 +149,10 @@ The caller id is prefixed with the API key's label, so two applications that
 both number their users from one stay apart in the record. Without the header,
 spend attributes to the application alone.
 
-These are **attribution, not authorization**. The service cannot verify that
-`X-Caller-Id: user-42` is really user 42 — the calling application asserts it.
-That is sound for splitting a bill among a trusted caller's own users and
-useless as access control, which remains the API key's job.
+These identifiers attribute spend; they grant nothing. The service cannot
+verify that `X-Caller-Id: user-42` is user 42, since the calling application
+asserts it. That is sound for splitting a bill among a trusted caller's own
+users and useless as access control, which remains the API key's job.
 
 Values are length-bounded and stripped of control characters, since they reach
 log lines and cost records. Send an opaque, stable id; an email address or a
@@ -212,6 +238,28 @@ body everywhere else.
 | POST | `/v1/tokens/count` | Provider-side token count |
 | GET | `/v1/models?engine=` | Model catalog: lifecycle and pricing |
 | GET | `/health`, `/healthz` | Liveness and versions |
+
+### What a call cost
+
+`/v1/structured` and `/v1/conversations/turn` return `usd_cost` alongside
+`usage`, priced from the tokens the provider reported. No extra provider call
+is made, so it costs nothing to read.
+
+It is a string, for the reason the pricing rates are strings: these are
+decimal money values that binary floating point cannot hold exactly. A model
+with no rates in the registry reports `null`, never `0` — the library's own
+cost helper returns 0.0 for an unpriced model, and a caller cannot tell that
+apart from a call that was genuinely free.
+
+`/v1/completions` reports no cost, because the library's buffered completion
+call returns bare text with no usage to price.
+
+### Embedding queries and documents
+
+`/v1/embeddings` takes an optional `input_type`, forwarded to the provider
+unchanged. Voyage and Gemini embed a search query differently from a stored
+document, so an index built without it and searched with it returns worse
+matches. Engines that do not distinguish the two ignore it.
 
 ### Model catalog
 
