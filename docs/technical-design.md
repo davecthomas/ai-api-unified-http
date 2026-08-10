@@ -219,6 +219,31 @@ Rate limiting is sized against the deploy: the counter is per process, so the
 deploy target sets `WEB_CONCURRENCY=1` to keep the configured limit meaning
 what it says.
 
+## Cost attribution
+
+`caller_context.py` puts caller identifiers into the library's observability
+context for the life of a request, so the library stamps them onto the cost
+event it emits. Without it every event carries the library's default caller and
+a deployment serving many users sees one total.
+
+The API key's label namespaces the caller id, because two applications
+numbering their users from one would otherwise collide and the combined spend
+would land on whichever the reader assumed.
+
+`session_id` and `workflow_id` are passed twice: once as context fields, and
+again as tags. The cost event carries a fixed field set that includes
+`caller_id` and neither of the others, while tags are emitted on cost events as
+`tag_<name>`. Passing them only as context fields attributes spend to a user
+but leaves the session invisible in the record that bills.
+
+The context lives in a contextvar and is reset in a `finally`, so a worker
+thread cannot carry one request's caller into the next. It propagates into the
+threadpool, which matters because the sync library calls are the ones emitting
+cost events for token counting and model listing.
+
+Identifiers are length-bounded and stripped of control characters. They reach
+log lines and cost records, so a newline would let a caller forge an entry.
+
 ## Configuration loading
 
 `config.py` loads `.env` into `os.environ` at startup, and real environment

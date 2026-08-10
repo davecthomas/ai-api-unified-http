@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.2.0
+# ai-api-unified-http 1.3.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -99,6 +99,36 @@ which this does not provide.
 
 Responses carry `X-RateLimit-Limit` and `X-RateLimit-Remaining`; a 429 adds
 `Retry-After`.
+
+### Cost attribution per end user
+
+An API key identifies a calling *application*, so a web app serving a thousand
+users holds one key and produces one undifferentiated spend total. Three
+optional headers split it:
+
+| Header | Lands in the cost event as |
+|---|---|
+| `X-Caller-Id` | `caller_id`, prefixed with the key's label |
+| `X-Session-Id` | `tag_session_id` |
+| `X-Workflow-Id` | `tag_workflow_id` |
+
+```bash
+curl -H "Authorization: Bearer $KEY" -H "X-Caller-Id: user-42" ...
+# cost event: {"caller_id": "webapp:user-42", "usd_cost": "0.000035", ...}
+```
+
+The caller id is prefixed with the API key's label, so two applications that
+both number their users from one stay apart in the record. Without the header,
+spend attributes to the application alone.
+
+These are **attribution, not authorization**. The service cannot verify that
+`X-Caller-Id: user-42` is really user 42 — the calling application asserts it.
+That is sound for splitting a bill among a trusted caller's own users and
+useless as access control, which remains the API key's job.
+
+Values are length-bounded and stripped of control characters, since they reach
+log lines and cost records. Send an opaque, stable id; an email address or a
+name would end up in the cost sink.
 
 ### Middleware and cost events
 
