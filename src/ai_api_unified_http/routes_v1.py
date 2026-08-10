@@ -93,13 +93,19 @@ def _usd_cost(client: Any, usage: Any) -> str | None:
     `compute_token_cost` treats cached input tokens as a subset of the input
     count, so the non-cached remainder is what it is given.
 
+    A failure to price never fails the request. The provider call has already
+    happened and already been billed by the time this runs, so raising here
+    would take away a result the caller has paid for in exchange for a number
+    they can compute themselves from `/v1/models`. An unpriceable call reports
+    the same null as an unpriced model.
+
     Args:
         client: The pooled client that served the call, carrying the rates.
         usage: The library's token usage for the call.
 
     Returns:
         str | None: The exact decimal cost as a string, or None when the model
-            carries no token rates.
+            carries no token rates or the rates could not be applied.
     """
     pricing: Any = getattr(getattr(client, "capabilities", None), "pricing", None)
     if pricing is None or getattr(pricing, "token_rates", None) is None:
@@ -107,11 +113,15 @@ def _usd_cost(client: Any, usage: Any) -> str | None:
 
     cached: int = usage.cached_input_tokens or 0
     non_cached: int = max((usage.input_tokens or 0) - cached, 0)
-    cost: Decimal = pricing.compute_token_cost(
-        input_tokens=non_cached,
-        output_tokens=usage.output_tokens or 0,
-        cached_input_tokens=cached,
-    )
+    try:
+        cost: Decimal = pricing.compute_token_cost(
+            input_tokens=non_cached,
+            output_tokens=usage.output_tokens or 0,
+            cached_input_tokens=cached,
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        logger.warning("could not price a completed call; reporting no cost")
+        return None
     return str(cost)
 
 

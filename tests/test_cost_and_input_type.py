@@ -116,6 +116,54 @@ class TestCostComputation:
     def test_a_client_with_no_capabilities_reports_null(self) -> None:
         assert _usd_cost(SimpleNamespace(), USAGE) is None
 
+    def test_a_pricing_failure_reports_null_rather_than_raising(self) -> None:
+        # The provider call has already happened and already been billed by the
+        # time this runs. Raising would take away a result the caller paid for,
+        # in exchange for a number they can compute from /v1/models.
+        def explode(**_: object) -> Decimal:
+            raise ValueError("rates are malformed")
+
+        pricing = SimpleNamespace(
+            token_rates=SimpleNamespace(input_per_1m=Decimal(3)),
+            compute_token_cost=explode,
+        )
+        client = MagicMock(capabilities=SimpleNamespace(pricing=pricing))
+        assert _usd_cost(client, USAGE) is None
+
+    def test_a_completed_call_still_returns_when_pricing_fails(
+        self, client: TestClient
+    ) -> None:
+        def explode(**_: object) -> Decimal:
+            raise ArithmeticError("bad rate")
+
+        pricing = SimpleNamespace(
+            token_rates=SimpleNamespace(input_per_1m=Decimal(3)),
+            compute_token_cost=explode,
+        )
+        turn = SimpleNamespace(
+            text="hello",
+            tool_calls=[],
+            finish_reason=SimpleNamespace(value="complete"),
+            usage=USAGE,
+            raw_content=None,
+        )
+        fake = MagicMock(capabilities=SimpleNamespace(pricing=pricing))
+        fake.asend_conversation = AsyncMock(return_value=turn)
+        with patch(
+            "ai_api_unified_http.routes_v1.get_completions_client", return_value=fake
+        ):
+            response = client.post(
+                "/v1/conversations/turn",
+                json={
+                    "engine": "claude",
+                    "system_prompt": "be brief",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+        assert response.status_code == 200
+        assert response.json()["text"] == "hello"
+        assert response.json()["usd_cost"] is None
+
 
 class TestCostOnResponses:
     def test_structured_returns_the_cost(self, client: TestClient) -> None:
