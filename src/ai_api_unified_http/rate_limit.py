@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from .auth import PUBLIC_PATHS
+from .paths import PUBLIC_PATHS
 from .schemas import ErrorResponse
 
 # Requests allowed per key per window. Zero disables the limiter.
@@ -44,6 +44,15 @@ DEFAULT_RATE_LIMIT: Final[int] = 60
 
 RATE_WINDOW_ENV: Final[str] = "HTTP_RATE_LIMIT_WINDOW_SECONDS"
 DEFAULT_WINDOW_SECONDS: Final[int] = 60
+
+# Whether to identify an unauthenticated caller by the forwarded header rather
+# than the socket peer. Off by default: it is only correct behind a proxy that
+# appends the address it saw.
+CLIENT_IP_FROM_XFF_ENV: Final[str] = "HTTP_CLIENT_IP_FROM_XFF"
+
+# Counter keys are namespaced so an address can never collide with an API key
+# label, which would let one caller spend the other's budget.
+_IP_KEY_PREFIX: Final[str] = "ip:"
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -130,6 +139,88 @@ def reset_counter() -> None:
     _counter.reset()
 
 
+def _trust_forwarded_header() -> bool:
+    """Return whether the deployment sits behind a proxy that sets the header."""
+    return os.environ.get(CLIENT_IP_FROM_XFF_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def client_ip(request: Request) -> str:
+    """Identify a caller by address, for counting requests that carry no key.
+
+    The socket peer is right when callers reach the service directly. Behind a
+    proxy it is the proxy, which would put every caller in one bucket, so the
+    forwarded header is read instead once the deployment opts in.
+
+    Only the **last** entry of `X-Forwarded-For` is read. A proxy appends the
+    address it accepted the connection from, so the final entry is the one the
+    infrastructure wrote and everything before it is whatever the client sent.
+    Reading the first entry, which is the usual convention, would let a caller
+    prepend a value of their choosing and mint a fresh budget per request,
+    which is the same as having no limit at all.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        str: The address to count against.
+    """
+    if _trust_forwarded_header():
+        forwarded: str = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            appended: str = forwarded.rsplit(",", 1)[-1].strip()
+            if appended:
+                return appended
+    return request.client.host if request.client is not None else "unknown"
+
+
+def count_unauthenticated(request: Request) -> tuple[bool, int]:
+    """Count a request that presented no usable key, keyed on its address.
+
+    Authentication runs before `RateLimitMiddleware`, because the limiter keys
+    on the label that authentication resolves. A rejected request therefore
+    never reaches the counter, so without this an unauthenticated caller can
+    retry without bound.
+
+    Args:
+        request: The request about to be refused.
+
+    Returns:
+        tuple[bool, int]: Whether the caller is still within budget, and the
+            seconds until the window resets.
+    """
+    limit: int = rate_limit()
+    if limit == 0:
+        return True, 0
+    allowed, _, resets_in = _counter.hit(
+        f"{_IP_KEY_PREFIX}{client_ip(request)}", limit, window_seconds()
+    )
+    return allowed, resets_in
+
+
+def too_many_requests(limit: int, window: int, resets_in: int) -> JSONResponse:
+    """Build the 429 body, shared by both paths that refuse for budget."""
+    body = ErrorResponse(
+        error="rate_limited",
+        detail=(
+            f"Over the request limit of {limit} per {window}s. Retry in "
+            f"{resets_in}s, or raise {RATE_LIMIT_ENV} on the deployment."
+        ),
+    )
+    return JSONResponse(
+        status_code=429,
+        content=body.model_dump(),
+        headers={
+            "Retry-After": str(resets_in),
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Remaining": "0",
+        },
+    )
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Reject a caller who exceeds their request budget for the window.
 
@@ -162,23 +253,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 limit,
                 window,
             )
-            body = ErrorResponse(
-                error="rate_limited",
-                detail=(
-                    f"Over the request limit of {limit} per {window}s for this "
-                    f"API key. Retry in {resets_in}s, or raise "
-                    f"{RATE_LIMIT_ENV} on the deployment."
-                ),
-            )
-            return JSONResponse(
-                status_code=429,
-                content=body.model_dump(),
-                headers={
-                    "Retry-After": str(resets_in),
-                    "X-RateLimit-Limit": str(limit),
-                    "X-RateLimit-Remaining": "0",
-                },
-            )
+            return too_many_requests(limit, window, resets_in)
 
         response: Response = await call_next(request)
         response.headers["X-RateLimit-Limit"] = str(limit)

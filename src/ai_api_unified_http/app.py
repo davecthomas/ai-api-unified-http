@@ -29,6 +29,7 @@ from .cost import (
 from .errors import EXCEPTION_HANDLERS, ErrorEnvelopeMiddleware
 from .logging_setup import configure_logging
 from .rate_limit import RateLimitMiddleware, rate_limit, window_seconds
+from .request_limits import RequestSizeLimitMiddleware, max_request_bytes
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
 
@@ -92,6 +93,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.getLogger(__name__).warning(
             "rate limiting is DISABLED; a caller can spend without bound"
         )
+
+    body_limit: int = max_request_bytes()
+    if body_limit:
+        logging.getLogger(__name__).info("max request body: %s bytes", body_limit)
+    else:
+        logging.getLogger(__name__).warning(
+            "request size limiting is DISABLED; one call can carry any payload"
+        )
     yield
 
 
@@ -113,18 +122,22 @@ def create_app() -> FastAPI:
     # after auth in order to wrap it. A 401 raised by auth has to carry CORS
     # headers, or a browser caller sees an opaque network error instead of the
     # 401 body telling it the key was missing.
-    # Nesting, outermost first: CORS, error envelope, auth, rate limit,
-    # caller context, routes.
+    # Nesting, outermost first: CORS, error envelope, size guard, auth,
+    # rate limit, caller context, routes.
     # add_middleware prepends, so these are registered inside-out. The envelope
     # sits inside CORS so its responses still carry CORS headers, and outside
     # auth so a bug there is enveloped too. The limiter sits inside auth
     # because it counts against the key's label, which auth resolves.
-    # Caller context is innermost of the four, so the identifiers it sets are
+    # Caller context is innermost of the five, so the identifiers it sets are
     # in place for the route and reset once the response is done. It needs the
     # API key label that auth resolves, so it cannot run before auth.
+    # The size guard sits outside auth, since refusing an oversized body should
+    # not require reading a key, and outside the limiter, so a body the service
+    # will not read never consumes anyone's request budget.
     app.add_middleware(CallerContextMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(ApiKeyAuthMiddleware)
+    app.add_middleware(RequestSizeLimitMiddleware)
     app.add_middleware(ErrorEnvelopeMiddleware)
     app.add_middleware(
         CORSMiddleware,

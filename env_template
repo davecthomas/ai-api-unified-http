@@ -86,3 +86,12 @@ EMBEDDING_MODEL_NAME=gemini-embedding-001
 
 # Escalate deprecated-model use to a hard error (recommended in CI).
 # AI_STRICT_DEPRECATIONS=1
+
+# Largest accepted request body in bytes; 0 disables the check. The rate limit
+# bounds how often a caller spends, not how much one call costs.
+HTTP_MAX_REQUEST_BYTES=1048576
+
+# Read the client address from X-Forwarded-For rather than the socket, for
+# counting requests that carry no API key. Set this only behind a proxy that
+# appends the address it saw; Cloud Run does.
+HTTP_CLIENT_IP_FROM_XFF=0

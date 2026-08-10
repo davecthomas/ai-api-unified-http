@@ -152,7 +152,7 @@ gcp-deploy:
 	gcloud run deploy $(SERVICE) --project=$(PROJECT) --region=$(REGION) \
 		--source . --allow-unauthenticated \
 		--memory 512Mi --cpu 1 --concurrency 40 --max-instances 3 --timeout 3600 \
-		--set-env-vars "COMPLETIONS_ENGINE=claude,HTTP_RATE_LIMIT=60,LOG_LEVEL=INFO,WEB_CONCURRENCY=1,HTTP_CORS_ORIGINS=$(CORS_ORIGINS)" \
+		--set-env-vars "COMPLETIONS_ENGINE=claude,HTTP_RATE_LIMIT=60,LOG_LEVEL=INFO,WEB_CONCURRENCY=1,HTTP_CLIENT_IP_FROM_XFF=1,HTTP_CORS_ORIGINS=$(CORS_ORIGINS)" \
 		--set-secrets "HTTP_API_KEYS=HTTP_API_KEYS:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GOOGLE_GEMINI_API_KEY=GOOGLE_GEMINI_API_KEY:latest" \
 		--quiet
 	@$(MAKE) --no-print-directory gcp-url PROJECT=$(PROJECT)

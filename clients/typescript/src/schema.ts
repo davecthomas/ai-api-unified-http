@@ -323,6 +323,11 @@ export interface components {
             /** Tool Calls */
             tool_calls?: components["schemas"]["ToolCall"][];
             usage: components["schemas"]["TokenUsage"];
+            /**
+             * Usd Cost
+             * @description Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero — null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.
+             */
+            usd_cost?: string | null;
         };
         /**
          * EmbeddingVector
@@ -344,6 +349,11 @@ export interface components {
              * @description Embeddings engine token, e.g. 'openai', 'google-gemini', 'voyage'.
              */
             engine: string;
+            /**
+             * Input Type
+             * @description What the text is for, typically 'query' or 'document'. Voyage and Gemini embed a search query differently from a stored document, so a retrieval index built without this and searched with it returns worse matches. Forwarded to the provider unchanged; engines that do not use it ignore it.
+             */
+            input_type?: string | null;
             /**
              * Inputs
              * @description Texts to embed; one vector per input.
@@ -535,6 +545,11 @@ export interface components {
              */
             raw_text: string;
             usage: components["schemas"]["TokenUsage"];
+            /**
+             * Usd Cost
+             * @description Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero — null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.
+             */
+            usd_cost?: string | null;
         };
         /** TokenCountRequest */
         TokenCountRequest: {
