@@ -203,10 +203,18 @@ gcp-cicd:
 	gcloud iam service-accounts create $(DEPLOYER) --project=$(PROJECT) \
 		--display-name="GitHub Actions deployer" 2>/dev/null || echo "  service account $(DEPLOYER) exists"; \
 	sa="$(DEPLOYER)@$(PROJECT).iam.gserviceaccount.com"; \
+	printf '  waiting for the service account to exist'; \
+	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		gcloud iam service-accounts describe "$$sa" --project=$(PROJECT) >/dev/null 2>&1 && break; \
+		printf '.'; sleep 3; \
+	done; echo; \
+	gcloud iam service-accounts describe "$$sa" --project=$(PROJECT) >/dev/null 2>&1 \
+		|| { echo "  service account $$sa never appeared; re-run this target"; exit 1; }; \
 	for role in roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.writer roles/storage.admin; do \
 		gcloud projects add-iam-policy-binding $(PROJECT) \
-			--member="serviceAccount:$$sa" --role="$$role" --condition=None >/dev/null; \
-		echo "  granted $$role"; \
+			--member="serviceAccount:$$sa" --role="$$role" --condition=None >/dev/null \
+			&& echo "  granted $$role" \
+			|| { echo "  FAILED to grant $$role"; exit 1; }; \
 	done; \
 	gcloud iam service-accounts add-iam-policy-binding "$$num-compute@developer.gserviceaccount.com" \
 		--project=$(PROJECT) --member="serviceAccount:$$sa" \
@@ -217,7 +225,7 @@ gcp-cicd:
 		--member="principalSet://iam.googleapis.com/projects/$$num/locations/global/workloadIdentityPools/$(POOL)/attribute.repository/$(GH_REPO)" >/dev/null; \
 	echo "  bound $(GH_REPO) to $$sa"; \
 	echo ""; \
-	echo "Add these two repository variables (Settings > Secrets and variables > Actions > Variables):"; \
+	echo "Add these repository variables (Settings > Secrets and variables > Actions > Variables):"; \
 	echo ""; \
 	echo "  GCP_WIF_PROVIDER  projects/$$num/locations/global/workloadIdentityPools/$(POOL)/providers/$(PROVIDER)"; \
 	echo "  GCP_DEPLOY_SA     $$sa"; \
