@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.4.0
+# ai-api-unified-http 1.4.1
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -47,12 +47,16 @@ separate to install.
 
 ```bash
 poetry install --extras dev
-make env            # copies a .env from a sibling ai_api_unified checkout
+make env            # copies a .env from a sibling ai_api_unified checkout, if you have one
 ```
 
-`make env` will not overwrite an existing `.env`. Provider variable names match
-the library's, so a `.env` that works there works here. After copying, check
-`COMPLETIONS_MODEL_NAME`:
+`make env` looks for a checkout of the library beside this one and copies its
+`.env`, because the provider variable names are identical, so a file that works
+there works here. With no such checkout it says so and points at
+[`env_template`](env_template), which is the path that needs nothing but this
+repo. Either way it refuses to overwrite an existing `.env`.
+
+After copying, check `COMPLETIONS_MODEL_NAME`:
 
 - `COMPLETIONS_MODEL_NAME` must belong to `COMPLETIONS_ENGINE`. A Gemini model
   name against the `claude` engine reaches Anthropic and returns 404.
@@ -386,10 +390,10 @@ drives every endpoint from editable inputs, renders SSE as it arrives, and
 holds conversation history in the page. It is a separate repo so this one holds
 only the service, and so the two version independently.
 
-```bash
-cd path/to/ai-api-unified-http        && make serve   # service on :8080
-cd path/to/ai-api-unified-http-webapp && make serve   # console on :3000
-```
+Nothing here depends on it, and it needs no checkout of this repo: it is a
+static page that calls whichever service URL it is given, including a
+deployment. Its README covers running it.
 
-The service admits `http://localhost:3000` by default; deployments set
+What this repo owes it is the CORS origin. `http://localhost:3000` is admitted
+by default, which is where that console serves; deployments set
 `HTTP_CORS_ORIGINS` to their real origins.
