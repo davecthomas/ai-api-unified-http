@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.4.2
+# ai-api-unified-http 1.5.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -272,6 +272,10 @@ standard runners on public repositories.
 | POST | `/v1/embeddings` | Embedding vectors |
 | POST | `/v1/tokens/count` | Provider-side token count |
 | GET | `/v1/models?engine=` | Model catalog: lifecycle and pricing |
+| POST | `/v1/batches` | Submit many prompts as one job, at batch pricing |
+| GET | `/v1/batches/{id}?engine=` | Batch status and counts |
+| GET | `/v1/batches/{id}/results?engine=` | Per-request results, once ended |
+| POST | `/v1/batches/{id}/cancel?engine=` | Ask the provider to cancel |
 | GET | `/health`, `/healthz` | Liveness and versions |
 
 ### What a call cost
@@ -295,6 +299,38 @@ call returns bare text with no usage to price.
 unchanged. Voyage and Gemini embed a search query differently from a stored
 document, so an index built without it and searched with it returns worse
 matches. Engines that do not distinguish the two ignore it.
+
+### Batches
+
+Providers that support batch charge roughly half the interactive rate and
+return results in hours rather than seconds. Submit, poll, and collect are
+separate calls, and the caller keeps the `batch_id`.
+
+```bash
+curl -X POST "$BASE/v1/batches" -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{
+    "engine": "claude",
+    "requests": [{"custom_id": "row-1", "prompt": "Classify: ..."}]
+  }'
+# -> {"batch_id": "batch_abc", "status": "in_progress", ...}
+
+curl "$BASE/v1/batches/batch_abc?engine=claude"          -H "Authorization: Bearer $KEY"
+curl "$BASE/v1/batches/batch_abc/results?engine=claude"  -H "Authorization: Bearer $KEY"
+```
+
+`engine` travels with the id on every call. A batch lives inside one provider's
+account, so the id alone does not say which client can ask about it.
+
+Results correlate by `custom_id`, not by position: providers return them in
+their own order. An item can fail while the batch ends normally, so read each
+item's `status` before its `text`.
+
+The library's blocking `run_batch` is not exposed. Behind an HTTP endpoint it
+would hold a connection open for hours and lose everything if it dropped.
+
+A batch of 1,000 prompts will exceed the 1 MiB `HTTP_MAX_REQUEST_BYTES`
+default long before it reaches the 1,000-item cap, so a deployment submitting
+large batches raises that setting.
 
 ### Model catalog
 

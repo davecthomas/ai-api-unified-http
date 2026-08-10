@@ -38,6 +38,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a batch of prompts
+         * @description Submit many prompts as one job and return its handle.
+         *
+         *     Args:
+         *         request: Engine selection and the prompts to run.
+         *
+         *     Returns:
+         *         BatchJobResponse: The job handle. Poll it with GET /v1/batches/{id}.
+         *
+         *     Raises:
+         *         HTTPException: 400 when the batch is empty or custom_ids collide, both
+         *             of which the caller can fix without a provider round trip.
+         */
+        post: operations["submit_batch_v1_batches_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/batches/{batch_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Status of a submitted batch
+         * @description Report a batch's current status and counts.
+         *
+         *     Args:
+         *         batch_id: Handle returned by the submit call.
+         *         engine: Engine that holds the batch. Required, because the id alone
+         *             does not identify which provider account it lives in.
+         *         model: Model the batch was submitted against, when it was not default.
+         *
+         *     Returns:
+         *         BatchJobResponse: Refreshed status and counts.
+         */
+        get: operations["get_batch_v1_batches__batch_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/batches/{batch_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel an in-progress batch
+         * @description Ask the provider to cancel a batch.
+         *
+         *     Cancellation is a request, not a guarantee: items already processed stay
+         *     processed and stay billed, which is why the response carries the counts.
+         *
+         *     Args:
+         *         batch_id: Handle returned by the submit call.
+         *         engine: Engine that holds the batch.
+         *         model: Model the batch was submitted against, when it was not default.
+         *
+         *     Returns:
+         *         BatchJobResponse: The job in its canceling or canceled state.
+         */
+        post: operations["cancel_batch_v1_batches__batch_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/batches/{batch_id}/results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Results of an ended batch
+         * @description Return every result for a batch that has ended.
+         *
+         *     Correlate results to requests by `custom_id`; providers return them in
+         *     their own order.
+         *
+         *     Args:
+         *         batch_id: Handle returned by the submit call.
+         *         engine: Engine that holds the batch.
+         *         model: Model the batch was submitted against, when it was not default.
+         *
+         *     Returns:
+         *         BatchResultsResponse: One entry per request, in provider order.
+         */
+        get: operations["get_batch_results_v1_batches__batch_id__results_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/completions": {
         parameters: {
             query?: never;
@@ -211,6 +332,137 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * BatchJobResponse
+         * @description A batch's identity and current state.
+         *
+         *     `batch_id` has to be presented with the same `engine` and `model` on every
+         *     later call. A batch lives inside one provider's account, and the client
+         *     that can ask about it is the one built for that engine, so the id alone
+         *     does not identify it.
+         *
+         *     Counts are optional because providers report different subsets, and the
+         *     library passes through what it was given rather than inventing zeros that
+         *     would read as measured values.
+         */
+        BatchJobResponse: {
+            /** Batch Id */
+            batch_id: string;
+            /** Canceled Count */
+            canceled_count?: number | null;
+            /**
+             * Ended At Utc
+             * @description ISO 8601 UTC timestamp, or null.
+             */
+            ended_at_utc?: string | null;
+            /** Engine */
+            engine: string;
+            /** Errored Count */
+            errored_count?: number | null;
+            /** Expired Count */
+            expired_count?: number | null;
+            /** Model */
+            model?: string | null;
+            /** Processing Count */
+            processing_count?: number | null;
+            /** Provider Batch Id */
+            provider_batch_id?: string | null;
+            /** Request Count */
+            request_count?: number | null;
+            /**
+             * Status
+             * @description One of: in_progress, canceling, ended, failed, expired, canceled. Results are available once the status is ended.
+             */
+            status: string;
+            /**
+             * Submitted At Utc
+             * @description ISO 8601 UTC timestamp, or null.
+             */
+            submitted_at_utc?: string | null;
+            /** Succeeded Count */
+            succeeded_count?: number | null;
+        };
+        /**
+         * BatchRequestItem
+         * @description One prompt in a batch, carrying the caller's own identifier.
+         *
+         *     `custom_id` is how a result is matched back to its request. Providers
+         *     return results in their own order, so position cannot be relied on.
+         */
+        BatchRequestItem: {
+            /**
+             * Custom Id
+             * @description Caller's identifier for this item; must be unique in the batch.
+             */
+            custom_id: string;
+            /** Max Response Tokens */
+            max_response_tokens?: number | null;
+            /** Prompt */
+            prompt: string;
+            /** System Prompt */
+            system_prompt?: string | null;
+        };
+        /**
+         * BatchResultItem
+         * @description One request's outcome.
+         *
+         *     An item can fail while the batch as a whole ends normally, so `status` is
+         *     per item and `text` is null unless it succeeded.
+         */
+        BatchResultItem: {
+            /** Custom Id */
+            custom_id: string;
+            /** Error Message */
+            error_message?: string | null;
+            /**
+             * Status
+             * @description One of: succeeded, errored, canceled, expired.
+             */
+            status: string;
+            /** Text */
+            text?: string | null;
+            usage: components["schemas"]["TokenUsage"];
+        };
+        /**
+         * BatchResultsResponse
+         * @description Every result for an ended batch.
+         *
+         *     Correlate by `custom_id`. Provider order is not request order.
+         */
+        BatchResultsResponse: {
+            /** Batch Id */
+            batch_id: string;
+            /** Engine */
+            engine: string;
+            /** Model */
+            model?: string | null;
+            /** Results */
+            results: components["schemas"]["BatchResultItem"][];
+        };
+        /**
+         * BatchSubmitRequest
+         * @description A batch of prompts submitted as one job.
+         *
+         *     Batch pricing is roughly half of interactive at the providers that offer
+         *     it, in exchange for latency measured in hours rather than seconds.
+         */
+        BatchSubmitRequest: {
+            /**
+             * Engine
+             * @description Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.
+             */
+            engine: string;
+            /**
+             * Model
+             * @description Model name; omit to use the engine's default model.
+             */
+            model?: string | null;
+            /**
+             * Requests
+             * @description Prompts to run; each needs a custom_id unique within the batch.
+             */
+            requests: components["schemas"]["BatchRequestItem"][];
+        };
         /** CompletionRequest */
         CompletionRequest: {
             /**
@@ -711,6 +963,249 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    submit_batch_v1_batches_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJobResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_batch_v1_batches__batch_id__get: {
+        parameters: {
+            query: {
+                engine: string;
+                model?: string | null;
+            };
+            header?: never;
+            path: {
+                batch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJobResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_batch_v1_batches__batch_id__cancel_post: {
+        parameters: {
+            query: {
+                engine: string;
+                model?: string | null;
+            };
+            header?: never;
+            path: {
+                batch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJobResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_batch_results_v1_batches__batch_id__results_get: {
+        parameters: {
+            query: {
+                engine: string;
+                model?: string | null;
+            };
+            header?: never;
+            path: {
+                batch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResultsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
