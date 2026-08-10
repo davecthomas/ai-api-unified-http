@@ -201,6 +201,37 @@ Cloud Run answers `/healthz` at its own frontend and never forwards it to the
 container. Use `/health` for health checks there; both paths return the same
 body everywhere else.
 
+### Deploying from CI
+
+Pushing a `vX.Y.Z` tag deploys, through the same `make gcp-deploy` a human
+runs, so a deploy from CI and one from a laptop cannot drift apart. Tags rather
+than merges: a deploy is the step worth being deliberate about, and every merge
+deploying would put a README typo into production.
+
+The workflow holds no credential. GitHub signs a token naming the repository
+and ref, Google checks it and returns an access token that lasts minutes. A
+service account key would do the same job and never expire.
+
+```bash
+make gcp-cicd PROJECT=your-project-id   # once
+```
+
+That creates the identity pool, a deploy service account, and a binding that
+names this repository, so a token minted by any other workflow matches nothing.
+It prints three values for **Settings → Secrets and variables → Actions →
+Variables**: `GCP_PROJECT`, `GCP_WIF_PROVIDER`, and `GCP_DEPLOY_SA`. They name
+a project rather than granting anything, which is why they are variables and
+not secrets.
+
+Two checks guard the deploy. The tag has to match `__version__`, or a release
+would deploy an image whose `/health` reports a different version. And after
+deploying, `/health` is polled until it reports the version just built, so a
+green run means the new revision is serving rather than that the API call
+returned.
+
+Actions is free here: this repository is public, and GitHub charges nothing for
+standard runners on public repositories.
+
 ## API surface
 
 | Method | Path | Purpose |
