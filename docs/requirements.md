@@ -50,6 +50,10 @@ record: 2026-08-04.
 | `POST /v1/embeddings` | Embedding vectors |
 | `POST /v1/tokens/count` | Provider-side token count |
 | `GET /v1/models` | Model catalog: pricing and lifecycle |
+| `POST /v1/batches` | Submit many prompts as one job, at batch pricing |
+| `GET /v1/batches/{id}` | Batch status and counts |
+| `GET /v1/batches/{id}/results` | Per-request results, once ended |
+| `POST /v1/batches/{id}/cancel` | Request cancellation |
 | `GET /healthz` | Liveness and versions |
 
 Every path under `/v1` requires a bearer token. `/healthz` and the OpenAPI
@@ -57,10 +61,11 @@ documents do not.
 
 ## Out of scope for v1
 
-- **Video and batch completions** — both are long-running job workflows (the
-  library's blocking helpers wait up to 900 s and 24 h respectively). They
-  need submit/poll job resources and artifact storage (object store + signed
-  URLs). Deferred until v1 is proven.
+- **Video** — a long-running job whose output is a file, so it needs artifact
+  storage (object store + signed URLs) on top of submit/poll resources. Batch
+  text completions shared this bullet until they shipped; their results are
+  JSON through the API, so they never needed the storage decision that still
+  gates video.
 - **Images and voice** — return bytes/files; same storage decision as video.
 - **Per-user identity and quotas** — API keys name calling applications, not
   people. Per-user identity, quotas, and per-caller rate limits belong behind

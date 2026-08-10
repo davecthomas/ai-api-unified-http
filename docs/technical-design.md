@@ -36,6 +36,11 @@ enforcement, and middleware stay in the library.
 | `POST /v1/embeddings` | `agenerate_embeddings` / `agenerate_embeddings_batch` | |
 | `POST /v1/tokens/count` | `count_tokens(...)` | Sync; threadpool. |
 | `GET /v1/models` | `list_model_names` + `capabilities` + pricing registry | Read-only registry data: context windows, rates, lifecycle status, replacements. |
+| `POST /v1/batches` | `submit_batch(...)` | Sync; threadpool. Empty batches and duplicate `custom_id`s are refused as 400s here — the library raises `ValueError` for both, which would surface as 500s. |
+| `GET /v1/batches/{id}` | `get_batch(...)` | Sync; threadpool. `engine` is required on every batch call: a batch lives in one provider's account, so the id alone does not identify it. |
+| `GET /v1/batches/{id}/results` | `get_batch_results(...)` | Sync; threadpool. Correlate by `custom_id`; provider order is not request order. Results carry usage but no `usd_cost` — the registry's token rates are interactive rates, and batch bills at the provider's batch rate. |
+| `POST /v1/batches/{id}/cancel` | `cancel_batch(...)` | Sync; threadpool. Cancellation is a request; already-processed items stay billed. |
+| — | `run_batch(...)` | Deliberately unexposed: it blocks until the batch ends, which over HTTP is a connection held for hours that loses the work if it drops. |
 | `GET /healthz` | none | Reports service, API, and pinned library versions. |
 
 ## Client pool
@@ -333,8 +338,6 @@ without the caller seeing internals.
 
 ## Future work
 
-- Auth layer (before any non-local deployment).
-- TypeScript client generation in CI from `/openapi.json`, published to npm.
-- Video/batch job resources + object storage for artifacts.
-- Library upstream: async streaming, pluggable cost sink, cached config
-  loading. None are blockers.
+- Video job resources + object storage for artifacts.
+- Library upstream: async streaming, a streaming conversation call, pluggable
+  cost sink, cached config loading. None are blockers.

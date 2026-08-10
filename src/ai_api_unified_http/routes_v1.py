@@ -10,6 +10,7 @@ docs/technical-design.md.
 """
 
 import logging
+from collections import Counter
 from collections.abc import Iterator
 from decimal import Decimal
 from functools import partial
@@ -685,8 +686,8 @@ async def submit_batch(request: BatchSubmitRequest) -> BatchJobResponse:
     if not request.requests:
         raise HTTPException(status_code=400, detail="requests must not be empty.")
 
-    custom_ids: list[str] = [item.custom_id for item in request.requests]
-    duplicates: set[str] = {i for i in custom_ids if custom_ids.count(i) > 1}
+    counts = Counter(item.custom_id for item in request.requests)
+    duplicates: set[str] = {i for i, n in counts.items() if n > 1}
     if duplicates:
         # The library raises ValueError for this, which would surface as a 500.
         # Checking here makes it the 400 it is, and names the offenders.

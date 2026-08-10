@@ -325,6 +325,10 @@ Results correlate by `custom_id`, not by position: providers return them in
 their own order. An item can fail while the batch ends normally, so read each
 item's `status` before its `text`.
 
+Results carry `usage` and no `usd_cost`. The registry's token rates are
+interactive rates, and batch bills at the provider's batch rate, so a figure
+computed here would overstate the real cost.
+
 The library's blocking `run_batch` is not exposed. Behind an HTTP endpoint it
 would hold a connection open for hours and lose everything if it dropped.
 
