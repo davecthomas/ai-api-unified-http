@@ -14,7 +14,7 @@ DEV_ENV = HTTP_API_KEYS="local:$(DEV_API_KEY)"
 # Sibling checkouts to copy a working .env from, in preference order.
 ENV_SOURCES = ../ai_api_unified/.env ../sample_ai_api_unified/.env
 
-.PHONY: help install lint test serve smoke env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs client
+.PHONY: help install lint test serve smoke env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs gcp-cicd client
 
 help:
 	@echo "env          copy a working .env from a sibling ai_api_unified checkout"
@@ -32,6 +32,7 @@ help:
 	@echo "gcp-deploy   build with Cloud Build and deploy"
 	@echo "gcp-url      print the deployed service URL"
 	@echo "gcp-logs     tail recent service logs"
+	@echo "gcp-cicd     let GitHub Actions deploy without a stored credential (once)"
 
 # Copy a working .env from a sibling checkout. Provider variable names are
 # identical to the library's, so a .env that works there works here unchanged.
@@ -168,3 +169,58 @@ gcp-logs:
 	$(call require_project)
 	gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="$(SERVICE)"' \
 		--project=$(PROJECT) --limit 40 --freshness=30m --format="value(textPayload)"
+
+# Let GitHub Actions deploy without holding a credential.
+#
+# The alternative is a service account key pasted into a repository secret,
+# which never expires and can deploy to this project for as long as it exists.
+# Workload Identity Federation trades it for an assertion: GitHub signs a token
+# saying which repository and which ref is running, Google checks the signature
+# against GitHub's public keys, and issues an access token that lasts minutes.
+#
+# The binding is what makes that safe. It names one repository, so a token
+# minted by any other workflow anywhere on GitHub matches nothing here.
+#
+# Run once per project. Re-running is safe: each step tolerates the resource
+# already existing.
+GH_REPO ?= davecthomas/ai-api-unified-http
+POOL ?= github
+PROVIDER ?= $(SERVICE)
+DEPLOYER ?= gh-deployer
+
+gcp-cicd:
+	$(call require_project)
+	@num=$$(gcloud projects describe $(PROJECT) --format="value(projectNumber)"); \
+	gcloud services enable iamcredentials.googleapis.com sts.googleapis.com --project=$(PROJECT); \
+	gcloud iam workload-identity-pools create $(POOL) --project=$(PROJECT) \
+		--location=global --display-name="GitHub Actions" 2>/dev/null || echo "  pool $(POOL) exists"; \
+	gcloud iam workload-identity-pools providers create-oidc $(PROVIDER) --project=$(PROJECT) \
+		--location=global --workload-identity-pool=$(POOL) \
+		--issuer-uri="https://token.actions.githubusercontent.com" \
+		--attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+		--attribute-condition="assertion.repository=='$(GH_REPO)'" \
+		2>/dev/null || echo "  provider $(PROVIDER) exists"; \
+	gcloud iam service-accounts create $(DEPLOYER) --project=$(PROJECT) \
+		--display-name="GitHub Actions deployer" 2>/dev/null || echo "  service account $(DEPLOYER) exists"; \
+	sa="$(DEPLOYER)@$(PROJECT).iam.gserviceaccount.com"; \
+	for role in roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.writer roles/storage.admin; do \
+		gcloud projects add-iam-policy-binding $(PROJECT) \
+			--member="serviceAccount:$$sa" --role="$$role" --condition=None >/dev/null; \
+		echo "  granted $$role"; \
+	done; \
+	gcloud iam service-accounts add-iam-policy-binding "$$num-compute@developer.gserviceaccount.com" \
+		--project=$(PROJECT) --member="serviceAccount:$$sa" \
+		--role="roles/iam.serviceAccountUser" >/dev/null; \
+	echo "  granted roles/iam.serviceAccountUser on the runtime service account"; \
+	gcloud iam service-accounts add-iam-policy-binding "$$sa" --project=$(PROJECT) \
+		--role="roles/iam.workloadIdentityUser" \
+		--member="principalSet://iam.googleapis.com/projects/$$num/locations/global/workloadIdentityPools/$(POOL)/attribute.repository/$(GH_REPO)" >/dev/null; \
+	echo "  bound $(GH_REPO) to $$sa"; \
+	echo ""; \
+	echo "Add these two repository variables (Settings > Secrets and variables > Actions > Variables):"; \
+	echo ""; \
+	echo "  GCP_WIF_PROVIDER  projects/$$num/locations/global/workloadIdentityPools/$(POOL)/providers/$(PROVIDER)"; \
+	echo "  GCP_DEPLOY_SA     $$sa"; \
+	echo "  GCP_PROJECT       $(PROJECT)"; \
+	echo ""; \
+	echo "They identify a project, not a credential, so they are variables rather than secrets."

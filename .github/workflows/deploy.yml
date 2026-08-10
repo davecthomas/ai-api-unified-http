@@ -1,0 +1,111 @@
+# Deploy to Cloud Run on a release tag.
+#
+# Tags rather than pushes to main: the README cuts releases by tagging, and a
+# deploy is the step that should be deliberate. Every merge deploying would put
+# a README typo into production and spend Cloud Build minutes doing it.
+#
+# Authentication is Workload Identity Federation, so this repository holds no
+# credential. GitHub signs a token naming the repo and ref; Google checks it
+# against the provider `make gcp-cicd` created and returns an access token that
+# lasts minutes. A fork cannot use it: the provider's attribute condition names
+# one repository.
+name: deploy
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm a manual deploy of the current ref'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # One deploy at a time. Two tags pushed together would otherwise race to
+  # decide which revision Cloud Run ends up serving.
+  group: deploy-cloud-run
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm a manual run
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm != 'deploy'
+        run: |
+          echo "::error::Manual deploys require typing 'deploy' in the confirm input."
+          exit 1
+
+      - name: Check the tag matches the service version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          code=$(sed -n 's/^__version__: str = "\(.*\)"$/\1/p' \
+            src/ai_api_unified_http/__version__.py)
+          echo "tag=$tag  code=$code"
+          # A tag that claims a version the code does not carry would deploy an
+          # image whose /health reports something else, and every later report
+          # of "which version is live" would be wrong.
+          if [ "$tag" != "$code" ]; then
+            echo "::error::Tag v$tag does not match __version__ $code."
+            exit 1
+          fi
+
+      - name: Fail early when CI/CD was never set up
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${{ vars.GCP_PROJECT }}" ]      || missing="$missing GCP_PROJECT"
+          [ -n "${{ vars.GCP_WIF_PROVIDER }}" ] || missing="$missing GCP_WIF_PROVIDER"
+          [ -n "${{ vars.GCP_DEPLOY_SA }}" ]    || missing="$missing GCP_DEPLOY_SA"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables:$missing. Run 'make gcp-cicd PROJECT=<id>' and add what it prints."
+            exit 1
+          fi
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy
+        # The same target a human runs, so a deploy from CI and a deploy from a
+        # laptop cannot drift into producing different services.
+        run: make gcp-deploy PROJECT="${{ vars.GCP_PROJECT }}"
+
+      - name: Verify the deployed version answers
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe ai-api-unified-http \
+            --project="${{ vars.GCP_PROJECT }}" --region=us-central1 \
+            --format='value(status.url)')
+          echo "service: $url"
+          expected=$(sed -n 's/^__version__: str = "\(.*\)"$/\1/p' \
+            src/ai_api_unified_http/__version__.py)
+
+          # Cloud Run answers /healthz at its own frontend without reaching the
+          # container, so /health is the path that proves the new revision is
+          # actually serving.
+          for attempt in 1 2 3 4 5 6; do
+            live=$(curl -fsS --max-time 30 "$url/health" | sed -n 's/.*"service_version":"\([^"]*\)".*/\1/p') || live=""
+            [ "$live" = "$expected" ] && break
+            echo "attempt $attempt: live=${live:-unreachable} expected=$expected"
+            sleep 10
+          done
+
+          if [ "$live" != "$expected" ]; then
+            echo "::error::Deployed service reports '${live:-unreachable}', expected '$expected'."
+            exit 1
+          fi
+          echo "::notice::$expected is live at $url"
