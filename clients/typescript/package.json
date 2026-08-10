@@ -1,6 +1,6 @@
 {
   "name": "@davecthomas/ai-api-unified-http-client",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Typed TypeScript client for ai-api-unified-http, generated from its OpenAPI spec.",
   "license": "MIT",
   "type": "module",

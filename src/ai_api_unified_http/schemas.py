@@ -25,6 +25,12 @@ MAX_SYSTEM_PROMPT_CHARS: Final[int] = 50_000
 MAX_EMBEDDING_INPUTS: Final[int] = 256
 MAX_CONVERSATION_MESSAGES: Final[int] = 500
 
+# Batch submissions carry many prompts in one body, so this interacts with
+# HTTP_MAX_REQUEST_BYTES: a batch near this count will exceed the 1 MiB default
+# and be refused with 413 long before the count is reached. Raise that setting
+# on a deployment that submits large batches.
+MAX_BATCH_REQUESTS: Final[int] = 1_000
+
 
 class EngineSelection(BaseModel):
     """Common provider-selection fields accepted by every model-invoking route."""
@@ -310,6 +316,98 @@ class NotImplementedResponse(BaseModel):
     error: str = "not_implemented"
     endpoint: str
     detail: str = "Planned for a future release; see docs/requirements.md."
+
+
+class BatchRequestItem(BaseModel):
+    """One prompt in a batch, carrying the caller's own identifier.
+
+    `custom_id` is how a result is matched back to its request. Providers
+    return results in their own order, so position cannot be relied on.
+    """
+
+    custom_id: str = Field(
+        max_length=128,
+        description="Caller's identifier for this item; must be unique in the batch.",
+    )
+    prompt: str = Field(max_length=MAX_PROMPT_CHARS)
+    system_prompt: str | None = Field(default=None, max_length=MAX_SYSTEM_PROMPT_CHARS)
+    max_response_tokens: int | None = None
+
+
+class BatchSubmitRequest(EngineSelection):
+    """A batch of prompts submitted as one job.
+
+    Batch pricing is roughly half of interactive at the providers that offer
+    it, in exchange for latency measured in hours rather than seconds.
+    """
+
+    requests: list[BatchRequestItem] = Field(
+        max_length=MAX_BATCH_REQUESTS,
+        description="Prompts to run; each needs a custom_id unique within the batch.",
+    )
+
+
+class BatchJobResponse(BaseModel):
+    """A batch's identity and current state.
+
+    `batch_id` has to be presented with the same `engine` and `model` on every
+    later call. A batch lives inside one provider's account, and the client
+    that can ask about it is the one built for that engine, so the id alone
+    does not identify it.
+
+    Counts are optional because providers report different subsets, and the
+    library passes through what it was given rather than inventing zeros that
+    would read as measured values.
+    """
+
+    batch_id: str
+    provider_batch_id: str | None = None
+    status: str = Field(
+        description=(
+            "One of: in_progress, canceling, ended, failed, expired, canceled. "
+            "Results are available once the status is ended."
+        )
+    )
+    request_count: int | None = None
+    succeeded_count: int | None = None
+    errored_count: int | None = None
+    canceled_count: int | None = None
+    expired_count: int | None = None
+    processing_count: int | None = None
+    submitted_at_utc: str | None = Field(
+        default=None, description="ISO 8601 UTC timestamp, or null."
+    )
+    ended_at_utc: str | None = Field(
+        default=None, description="ISO 8601 UTC timestamp, or null."
+    )
+    engine: str
+    model: str | None = None
+
+
+class BatchResultItem(BaseModel):
+    """One request's outcome.
+
+    An item can fail while the batch as a whole ends normally, so `status` is
+    per item and `text` is null unless it succeeded.
+    """
+
+    custom_id: str
+    status: str = Field(description="One of: succeeded, errored, canceled, expired.")
+    text: str | None = None
+    error_message: str | None = None
+    usage: TokenUsage
+
+
+class BatchResultsResponse(BaseModel):
+    """Every result for an ended batch.
+
+    Correlate by `custom_id`. Provider order is not request order.
+    """
+
+    batch_id: str
+    results: list[BatchResultItem]
+    engine: str
+    model: str | None = None
 
 
 class ErrorResponse(BaseModel):

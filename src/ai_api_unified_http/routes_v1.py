@@ -10,12 +10,14 @@ docs/technical-design.md.
 """
 
 import logging
+from collections import Counter
 from collections.abc import Iterator
 from decimal import Decimal
 from functools import partial
 from typing import Any
 
 from ai_api_unified import (
+    AIBatchRequestItem,
     AICompletionsPromptParamsBase,
     AIFactory,
     AiProviderCapabilityUnsupportedError,
@@ -35,6 +37,10 @@ from .conversation_token import (
     looks_like_conversation_token,
 )
 from .schemas import (
+    BatchJobResponse,
+    BatchResultItem,
+    BatchResultsResponse,
+    BatchSubmitRequest,
     CompletionRequest,
     CompletionResponse,
     ConversationTurnRequest,
@@ -616,3 +622,197 @@ async def models(engine: str) -> ModelsResponse:
         if info is not None:
             catalog.append(_model_info(info))
     return ModelsResponse(engine=engine, models=names, catalog=catalog)
+
+
+# --- Batch ------------------------------------------------------------------
+#
+# Batch trades latency for price: providers that offer it charge roughly half
+# the interactive rate and return results in hours rather than seconds.
+#
+# `run_batch` is deliberately not exposed. It submits, polls, and blocks until
+# the batch ends, which for an HTTP endpoint means holding a connection open
+# for hours and losing everything if it drops. Submit, poll, and fetch are
+# separate calls here, and the caller keeps the batch id — the same reason
+# conversations are stateless.
+#
+# Every batch call needs a constructed client, and a batch lives inside one
+# provider's account, so `engine` travels with the id on every request. The id
+# alone does not say which provider holds it.
+
+
+def _batch_job(job: Any, engine: str, model: str | None) -> BatchJobResponse:
+    """Convert the library's job handle into the response model."""
+    return BatchJobResponse(
+        batch_id=job.batch_id,
+        provider_batch_id=job.provider_batch_id,
+        status=job.status.value,
+        request_count=job.request_count,
+        succeeded_count=job.succeeded_count,
+        errored_count=job.errored_count,
+        canceled_count=job.canceled_count,
+        expired_count=job.expired_count,
+        processing_count=job.processing_count,
+        submitted_at_utc=(
+            job.submitted_at_utc.isoformat() if job.submitted_at_utc else None
+        ),
+        ended_at_utc=job.ended_at_utc.isoformat() if job.ended_at_utc else None,
+        engine=engine,
+        model=model,
+    )
+
+
+@router.post(
+    "/batches",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
+    summary="Submit a batch of prompts",
+)
+async def submit_batch(request: BatchSubmitRequest) -> BatchJobResponse:
+    """Submit many prompts as one job and return its handle.
+
+    Args:
+        request: Engine selection and the prompts to run.
+
+    Returns:
+        BatchJobResponse: The job handle. Poll it with GET /v1/batches/{id}.
+
+    Raises:
+        HTTPException: 400 when the batch is empty or custom_ids collide, both
+            of which the caller can fix without a provider round trip.
+    """
+    if not request.requests:
+        raise HTTPException(status_code=400, detail="requests must not be empty.")
+
+    counts = Counter(item.custom_id for item in request.requests)
+    duplicates: set[str] = {i for i, n in counts.items() if n > 1}
+    if duplicates:
+        # The library raises ValueError for this, which would surface as a 500.
+        # Checking here makes it the 400 it is, and names the offenders.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"custom_id must be unique within a batch; repeated: "
+                f"{', '.join(sorted(duplicates))}."
+            ),
+        )
+
+    client = get_completions_client(request.engine, request.model)
+    items = [
+        AIBatchRequestItem(
+            custom_id=item.custom_id,
+            prompt=item.prompt,
+            system_prompt=item.system_prompt,
+            max_response_tokens=item.max_response_tokens,
+        )
+        for item in request.requests
+    ]
+    job = await run_in_threadpool(client.submit_batch, items)
+    return _batch_job(job, request.engine, request.model)
+
+
+@router.get(
+    "/batches/{batch_id}",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
+    summary="Status of a submitted batch",
+)
+async def get_batch(
+    batch_id: str, engine: str, model: str | None = None
+) -> BatchJobResponse:
+    """Report a batch's current status and counts.
+
+    Args:
+        batch_id: Handle returned by the submit call.
+        engine: Engine that holds the batch. Required, because the id alone
+            does not identify which provider account it lives in.
+        model: Model the batch was submitted against, when it was not default.
+
+    Returns:
+        BatchJobResponse: Refreshed status and counts.
+    """
+    client = get_completions_client(engine, model)
+    job = await run_in_threadpool(client.get_batch, batch_id)
+    return _batch_job(job, engine, model)
+
+
+@router.get(
+    "/batches/{batch_id}/results",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
+    summary="Results of an ended batch",
+)
+async def get_batch_results(
+    batch_id: str, engine: str, model: str | None = None
+) -> BatchResultsResponse:
+    """Return every result for a batch that has ended.
+
+    Correlate results to requests by `custom_id`; providers return them in
+    their own order.
+
+    Args:
+        batch_id: Handle returned by the submit call.
+        engine: Engine that holds the batch.
+        model: Model the batch was submitted against, when it was not default.
+
+    Returns:
+        BatchResultsResponse: One entry per request, in provider order.
+    """
+    client = get_completions_client(engine, model)
+    items = await run_in_threadpool(client.get_batch_results, batch_id)
+    return BatchResultsResponse(
+        batch_id=batch_id,
+        results=[
+            BatchResultItem(
+                custom_id=item.custom_id,
+                status=item.status.value,
+                text=item.text,
+                error_message=item.error_message,
+                usage=TokenUsage(
+                    input_tokens=item.provider_prompt_tokens,
+                    output_tokens=item.provider_completion_tokens,
+                ),
+            )
+            for item in items
+        ],
+        engine=engine,
+        model=model,
+    )
+
+
+@router.post(
+    "/batches/{batch_id}/cancel",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
+    summary="Cancel an in-progress batch",
+)
+async def cancel_batch(
+    batch_id: str, engine: str, model: str | None = None
+) -> BatchJobResponse:
+    """Ask the provider to cancel a batch.
+
+    Cancellation is a request, not a guarantee: items already processed stay
+    processed and stay billed, which is why the response carries the counts.
+
+    Args:
+        batch_id: Handle returned by the submit call.
+        engine: Engine that holds the batch.
+        model: Model the batch was submitted against, when it was not default.
+
+    Returns:
+        BatchJobResponse: The job in its canceling or canceled state.
+    """
+    client = get_completions_client(engine, model)
+    job = await run_in_threadpool(client.cancel_batch, batch_id)
+    return _batch_job(job, engine, model)
