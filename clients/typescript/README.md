@@ -85,18 +85,9 @@ Authentication is npm Trusted Publishing over OIDC, so this repository holds no
 npm token. GitHub mints a short-lived credential scoped to one workflow, and
 npm records the publisher as GitHub Actions.
 
-The first publish cannot use it. Trusted publishing is configured in a
-package's own settings page, and that page does not exist until the package
-does, so version one goes up by hand:
-
-```bash
-cd clients/typescript
-npm login                 # prompts for 2FA
-npm run build
-npm publish               # publishConfig.access is public, required for a scoped name
-```
-
-Then configure the trusted publisher at
+Version 1.0.0 went up by hand, because trusted publishing is configured on a
+package's own settings page and that page does not exist until the package
+does. That is no longer true, so configure it once at
 `npmjs.com/package/@davecthomas/ai-api-unified-http-client/access`:
 
 | Field | Value |
@@ -106,11 +97,14 @@ Then configure the trusted publisher at
 | Workflow filename | `publish-client.yml` |
 | Allowed actions | `npm publish` |
 
+Until that is set, a tag-triggered publish fails on authentication rather than
+falling back to anything.
+
 Every publish after that is a tag:
 
 ```bash
 # bump version in package.json first, then
-git tag client-v1.2.1 && git push origin client-v1.2.1
+git tag client-v1.1.0 && git push origin client-v1.1.0
 ```
 
 The workflow refuses to publish when the tag and `package.json` disagree, so a
