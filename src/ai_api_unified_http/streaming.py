@@ -115,10 +115,12 @@ EVENT_PROGRESS: Final[str] = "progress"
 # Gap between reads of a job record while streaming its progress.
 PROGRESS_POLL_SECONDS: Final[float] = 1.0
 
-# Ceiling on how long one progress stream is held open. A caller that loses
-# interest still holds a worker until it disconnects, and a job that stops
-# updating would otherwise hold one forever.
-PROGRESS_MAX_SECONDS: Final[float] = 1800.0
+# Ceiling on how long one progress stream is held open. Each stream holds a
+# connection for its lifetime, and Cloud Run counts connections against an
+# instance's concurrency, so a job that stopped updating would otherwise
+# occupy a slot indefinitely. A caller following a longer job polls
+# GET /v1/videos/{id} and reconnects.
+PROGRESS_MAX_SECONDS: Final[float] = 600.0
 
 
 async def sse_job_progress(caller: str, job_id: str) -> AsyncIterator[str]:

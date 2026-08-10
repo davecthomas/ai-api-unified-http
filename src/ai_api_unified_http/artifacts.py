@@ -58,7 +58,13 @@ CHUNK_BYTES: Final[int] = 256 * 1024
 # shape is enforced on the way in. Without this a caller could put `..` in a
 # path segment and read outside the store.
 _SAFE_ID: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+# Labels may hold dots, since an operator naming a key after a hostname is
+# reasonable, so the pattern alone would admit "." and ".." — a label that
+# would place the whole store one directory up. The id pattern rejects those by
+# its length floor; this one has to rule them out by name.
 _SAFE_LABEL: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_RESERVED_LABELS: Final[frozenset[str]] = frozenset({".", ".."})
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -114,6 +120,8 @@ def _safe_segment(value: str, pattern: re.Pattern[str], kind: str) -> str:
 
 def _caller_dir(caller: str) -> Path:
     """Return the directory holding one caller's artifacts."""
+    if caller.strip(".") == "" or caller in _RESERVED_LABELS:
+        raise ArtifactNotFoundError("No such caller.")
     return artifact_root() / _safe_segment(caller, _SAFE_LABEL, "caller")
 
 

@@ -201,6 +201,14 @@ class TestSeparation:
         with pytest.raises(artifacts.ArtifactNotFoundError):
             artifacts.read_record("first", bad_id)
 
+    @pytest.mark.parametrize("label", [".", "..", "...", "...."])
+    def test_a_dot_only_label_cannot_relocate_the_store(self, label: str) -> None:
+        # Labels come from HTTP_API_KEYS rather than from a request, so this is
+        # an operator mistake rather than an attack — but ".." would put every
+        # artifact one directory above the store.
+        with pytest.raises(artifacts.ArtifactNotFoundError):
+            artifacts.store_artifact(label, PNG, mime_type="image/png")
+
     def test_ids_are_not_sequential(self) -> None:
         # A guessable id would make separation depend on nobody counting.
         assert len({artifacts.new_id() for _ in range(50)}) == 50
