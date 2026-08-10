@@ -181,6 +181,11 @@ gcp-logs:
 # The binding is what makes that safe. It names one repository, so a token
 # minted by any other workflow anywhere on GitHub matches nothing here.
 #
+# The storage role is for Cloud Build's source staging bucket, which
+# `gcloud run deploy --source` uploads to. objectAdmin covers writing those
+# objects; storage.admin would additionally grant control over every bucket in
+# the project, including creating and deleting them, which a deploy never does.
+#
 # Run once per project. Re-running is safe: each step tolerates the resource
 # already existing.
 GH_REPO ?= davecthomas/ai-api-unified-http
@@ -210,7 +215,7 @@ gcp-cicd:
 	done; echo; \
 	gcloud iam service-accounts describe "$$sa" --project=$(PROJECT) >/dev/null 2>&1 \
 		|| { echo "  service account $$sa never appeared; re-run this target"; exit 1; }; \
-	for role in roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.writer roles/storage.admin; do \
+	for role in roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.writer roles/storage.objectAdmin; do \
 		gcloud projects add-iam-policy-binding $(PROJECT) \
 			--member="serviceAccount:$$sa" --role="$$role" --condition=None >/dev/null \
 			&& echo "  granted $$role" \
