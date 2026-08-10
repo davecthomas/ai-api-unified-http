@@ -95,3 +95,12 @@ HTTP_MAX_REQUEST_BYTES=1048576
 # counting requests that carry no API key. Set this only behind a proxy that
 # appends the address it saw; Cloud Run does.
 HTTP_CLIENT_IP_FROM_XFF=0
+
+# Where generated images and video are stored. A bucket mount in a deployment,
+# any writable directory locally. Artifacts outlive the request that made them
+# so a failed transfer is a re-download rather than a re-generation.
+HTTP_ARTIFACT_DIR=artifacts
+
+# How long an artifact is served. The bucket's lifecycle rule does the actual
+# deleting; this stops the service serving something about to be removed.
+HTTP_ARTIFACT_TTL_SECONDS=86400

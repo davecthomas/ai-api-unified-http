@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.5.0
+# ai-api-unified-http 1.6.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -220,6 +220,17 @@ make gcp-secrets PROJECT=your-project-id
 make gcp-deploy  PROJECT=your-project-id
 ```
 
+Generated images and video need a bucket, created once:
+
+```bash
+make gcp-artifacts PROJECT=your-project-id
+```
+
+`make gcp-deploy` mounts it at `/artifacts` and deploys with CPU allocated
+outside request processing, which a video job needs — its generation outlives
+the request that started it, and a throttled instance would stall the moment
+the response was sent.
+
 `make gcp-secrets` reads the local `.env`, writes each provider key to Secret
 Manager, and grants the runtime service account access. Keys reach the
 container as mounted secrets, so nothing sensitive lands in the image or in the
@@ -276,6 +287,11 @@ standard runners on public repositories.
 | GET | `/v1/batches/{id}?engine=` | Batch status and counts |
 | GET | `/v1/batches/{id}/results?engine=` | Per-request results, once ended |
 | POST | `/v1/batches/{id}/cancel?engine=` | Ask the provider to cancel |
+| POST | `/v1/images` | Generate images; returns references, not bytes |
+| POST | `/v1/videos` | Start a video generation; returns a job |
+| GET | `/v1/videos/{id}` | Job status and progress |
+| GET | `/v1/videos/{id}/events` | Progress as it changes (SSE) |
+| GET | `/v1/artifacts/{id}/content` | Stream the bytes, resumably |
 | GET | `/health`, `/healthz` | Liveness and versions |
 
 ### What a call cost
@@ -299,6 +315,101 @@ call returns bare text with no usage to price.
 unchanged. Voyage and Gemini embed a search query differently from a stored
 document, so an index built without it and searched with it returns worse
 matches. Engines that do not distinguish the two ignore it.
+
+### Images and video
+
+Both produce bytes far too large for a JSON body, so a generating call returns
+a **manifest** and the bytes are fetched separately.
+
+That split is what buys two things. `Content-Length` on the fetch lets a client
+draw a real progress bar, and `Range` lets a failed transfer resume — which
+matters because generation is the expensive half and has already been paid for
+by the time bytes exist.
+
+```bash
+# Images are generated inline; they take seconds.
+curl -X POST "$BASE/v1/images" -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' \
+  -d '{"prompt": "a red bicycle", "num_images": 2}'
+# -> {"artifacts": [{"artifact_id": "...", "size_bytes": 1841203,
+#                    "mime_type": "image/png",
+#                    "url_path": "/v1/artifacts/.../content"}, ...]}
+
+curl "$BASE/v1/artifacts/<id>/content" -H "Authorization: Bearer $KEY" -o out.png
+```
+
+Video takes minutes, which is longer than a request should live, so it is a job:
+
+```bash
+curl -X POST "$BASE/v1/videos" -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"prompt": "a sunset", "duration_seconds": 5}'
+# -> {"job_id": "...", "status": "queued", "percent": 0.0, "estimated": true}
+
+curl "$BASE/v1/videos/<job_id>" -H "Authorization: Bearer $KEY"
+curl -N "$BASE/v1/videos/<job_id>/events" -H "Authorization: Bearer $KEY"
+```
+
+#### Two kinds of progress
+
+They are different problems and they have different answers.
+
+**While generating, there are no bytes to measure**, so the service publishes a
+figure. `/v1/videos/{id}/events` emits a `progress` event whenever it changes:
+
+```
+event: progress
+data: {"job_id":"...","status":"generating","percent":42.0,"estimated":true}
+```
+
+`estimated` is the field to read. When a provider reports progress it is
+`false` and the number is measured. When one does not — and many do not — the
+service derives it from elapsed time, says so, and never lets a guess reach
+100. Render a confident bar on a measured figure and a hedged one otherwise.
+
+**While transferring, the client measures it** and needs nothing from the
+service but an honest length:
+
+```js
+const res = await fetch(urlPath, {headers: {Authorization: `Bearer ${key}`}});
+const total = +res.headers.get("Content-Length");
+const reader = res.body.getReader();
+let received = 0;
+while (true) {
+  const {done, value} = await reader.read();
+  if (done) break;
+  received += value.length;
+  setProgress(received / total);
+}
+```
+
+#### Resuming a failed transfer
+
+`Accept-Ranges: bytes` is always sent. A client that kept what it received asks
+for the rest:
+
+```bash
+curl -H "Range: bytes=1048576-" "$BASE/v1/artifacts/<id>/content" -H "Authorization: Bearer $KEY"
+# 206, with Content-Range: bytes 1048576-8388607/8388608
+```
+
+A range that cannot be satisfied serves the whole body rather than failing, so
+a client whose retry logic guesses wrong still gets its artifact.
+
+#### Where artifacts live
+
+In a bucket mounted at `HTTP_ARTIFACT_DIR`, not in the container. Cloud Run's
+filesystem is in-memory, so a video would consume the instance's own memory
+budget, and with several instances a retry usually reaches one that never held
+the bytes.
+
+Artifacts are namespaced by the API key's label, so one caller cannot fetch
+another's by holding an id, and ids are random rather than sequential.
+`HTTP_ARTIFACT_TTL_SECONDS` sets how long they are served, defaulting to a day;
+the bucket's own lifecycle rule does the deleting, because a service that
+scales to zero cannot be relied on to sweep.
+
+Locally, `HTTP_ARTIFACT_DIR` is any writable directory and everything works the
+same way.
 
 ### Batches
 

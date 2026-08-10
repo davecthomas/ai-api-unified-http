@@ -31,6 +31,11 @@ MAX_CONVERSATION_MESSAGES: Final[int] = 500
 # on a deployment that submits large batches.
 MAX_BATCH_REQUESTS: Final[int] = 1_000
 
+# Each image is generated, fetched, and written to the artifact store before
+# the response returns, so this bounds how long one request can take as much as
+# how much it can cost.
+MAX_IMAGES_PER_REQUEST: Final[int] = 4
+
 
 class EngineSelection(BaseModel):
     """Common provider-selection fields accepted by every model-invoking route."""
@@ -407,6 +412,94 @@ class BatchResultsResponse(BaseModel):
     batch_id: str
     results: list[BatchResultItem]
     engine: str
+    model: str | None = None
+
+
+class ImageRequest(BaseModel):
+    """A prompt and the shape of the images wanted from it."""
+
+    prompt: str = Field(max_length=MAX_PROMPT_CHARS)
+    model: str | None = Field(
+        default=None, description="Image model, or null for the configured default."
+    )
+    width: int | None = Field(default=None, ge=64, le=4096)
+    height: int | None = Field(default=None, ge=64, le=4096)
+    image_format: str = Field(default="png", description="One of: png, jpeg, webp.")
+    quality: str = Field(default="medium", description="Provider quality hint.")
+    background: str = Field(default="auto", description="Provider background hint.")
+    num_images: int = Field(
+        default=1,
+        ge=1,
+        le=MAX_IMAGES_PER_REQUEST,
+        description=(
+            "How many images to generate. Capped because each one is fetched "
+            "and stored before the response returns."
+        ),
+    )
+
+
+class ArtifactRef(BaseModel):
+    """Where to fetch one generated artifact, and how big it is.
+
+    The bytes are not inlined. They are fetched from `/v1/artifacts/{id}/content`,
+    which sends `Content-Length` so a client can draw a real progress bar, and
+    honours `Range` so a failed transfer resumes instead of restarting.
+    """
+
+    artifact_id: str
+    mime_type: str
+    size_bytes: int = Field(
+        description="Exact byte count, matching the Content-Length of a full fetch."
+    )
+    kind: str = Field(description="One of: image, video.")
+    url_path: str = Field(
+        description="Path to fetch the bytes from, relative to the service root."
+    )
+
+
+class ImageResponse(BaseModel):
+    """What a generation produced, without the bytes."""
+
+    artifacts: list[ArtifactRef]
+    engine: str | None = None
+    model: str | None = None
+
+
+class VideoRequest(BaseModel):
+    """A prompt and the shape of the video wanted from it."""
+
+    prompt: str = Field(max_length=MAX_PROMPT_CHARS)
+    engine: str | None = Field(
+        default=None, description="Video engine, or null for the configured default."
+    )
+    model: str | None = None
+    duration_seconds: int | None = Field(default=None, ge=1, le=60)
+    aspect_ratio: str | None = None
+    resolution: str | None = None
+    fps: int | None = Field(default=None, ge=1, le=120)
+    seed: int | None = None
+    output_format: str = Field(default="mp4")
+
+
+class JobResponse(BaseModel):
+    """A generation job's progress.
+
+    `percent` is a number a UI can render directly. `estimated` says whether it
+    was measured or derived: providers do not all report progress, so an
+    estimate from elapsed time is offered rather than nothing, and is labelled
+    so a caller can present it honestly. An estimate never reaches 100 — only
+    the job finishing sets that.
+    """
+
+    job_id: str
+    status: str = Field(description="One of: queued, generating, ready, failed.")
+    percent: float = Field(description="Completion in [0, 100].")
+    estimated: bool = Field(
+        description="True when percent is derived from elapsed time, not reported."
+    )
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
+    error: str | None = None
+    engine: str | None = None
     model: str | None = None
 
 

@@ -41,6 +41,11 @@ enforcement, and middleware stay in the library.
 | `GET /v1/batches/{id}/results` | `get_batch_results(...)` | Sync; threadpool. Correlate by `custom_id`; provider order is not request order. Results carry usage but no `usd_cost` — the registry's token rates are interactive rates, and batch bills at the provider's batch rate. |
 | `POST /v1/batches/{id}/cancel` | `cancel_batch(...)` | Sync; threadpool. Cancellation is a request; already-processed items stay billed. |
 | — | `run_batch(...)` | Deliberately unexposed: it blocks until the batch ends, which over HTTP is a connection held for hours that loses the work if it drops. |
+| `POST /v1/images` | `generate_images(...)` | Sync; threadpool. Bytes go to the artifact store and the response carries references, because base64 in JSON inflates by a third, caps at one buffer, and gives a caller no way to show progress or resume. |
+| `POST /v1/videos` | `submit_video_generation(...)` | Starts a worker-thread job and returns immediately. Generation outlives the request, so on Cloud Run this needs CPU allocated outside request processing. |
+| `GET /v1/videos/{id}` | `get_video_generation_job(...)` via the job record | Progress is read from the shared store, not from process memory: the instance polled is usually not the one working. |
+| `GET /v1/videos/{id}/events` | none | Service-owned. Emits progress on change and marks it `estimated` when no provider figure exists, so the feature does not depend on a provider reporting one. |
+| `GET /v1/artifacts/{id}/content` | none | Service-owned. `Content-Length` is what a client builds a progress bar from; `Range` is what makes a failed transfer a re-download rather than a re-generation. |
 | `GET /healthz` | none | Reports service, API, and pinned library versions. |
 
 ## Client pool
@@ -338,6 +343,6 @@ without the caller seeing internals.
 
 ## Future work
 
-- Video job resources + object storage for artifacts.
+- Voice, if a consumer asks for it.
 - Library upstream: async streaming, a streaming conversation call, pluggable
   cost sink, cached config loading. None are blockers.

@@ -80,7 +80,7 @@ def test_completions_and_embeddings_pools_are_independent() -> None:
         clients.get_completions_client("google-gemini", None)
         clients.get_embeddings_client("google-gemini", None)
 
-    assert clients.pool_sizes() == {"completions": 1, "embeddings": 1}
+    assert clients.pool_sizes() == {"completions": 1, "embeddings": 1, "media": 0}
 
 
 def test_factory_receives_the_library_argument_names() -> None:

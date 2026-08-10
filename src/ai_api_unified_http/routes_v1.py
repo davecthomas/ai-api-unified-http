@@ -9,6 +9,7 @@ belong to the library. The endpoint-to-library-call mapping lives in
 docs/technical-design.md.
 """
 
+import asyncio
 import logging
 from collections import Counter
 from collections.abc import Iterator
@@ -17,6 +18,8 @@ from functools import partial
 from typing import Any
 
 from ai_api_unified import (
+    AIBaseImageProperties,
+    AIBaseVideoProperties,
     AIBatchRequestItem,
     AICompletionsPromptParamsBase,
     AIFactory,
@@ -25,18 +28,37 @@ from ai_api_unified import (
     get_model_info,
 )
 from ai_api_unified.pricing import DICT_MODEL_INFO
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import Response
 
-from .clients import get_completions_client, get_embeddings_client
+from .artifacts import (
+    ArtifactNotFoundError,
+    ArtifactRecord,
+    JobRecord,
+    new_id,
+    read_job,
+    read_record,
+    store_artifact,
+    write_job,
+)
+from .clients import (
+    get_completions_client,
+    get_embeddings_client,
+    get_images_client,
+    get_video_client,
+)
 from .conversation_token import (
     InvalidConversationTokenError,
     decode_conversation_token,
     encode_conversation_token,
     looks_like_conversation_token,
 )
+from .delivery import artifact_response, not_found
+from .jobs import run_video_job
 from .schemas import (
+    ArtifactRef,
     BatchJobResponse,
     BatchResultItem,
     BatchResultsResponse,
@@ -49,6 +71,9 @@ from .schemas import (
     EmbeddingsResponse,
     EmbeddingVector,
     ErrorResponse,
+    ImageRequest,
+    ImageResponse,
+    JobResponse,
     ModelInfo,
     ModelPricing,
     ModelsResponse,
@@ -60,14 +85,28 @@ from .schemas import (
     TokenRates,
     TokenUsage,
     ToolCall,
+    VideoRequest,
 )
-from .streaming import SSE_HEADERS, SSE_MEDIA_TYPE, sse_from_sync_iterator
+from .streaming import (
+    SSE_HEADERS,
+    SSE_MEDIA_TYPE,
+    sse_from_sync_iterator,
+    sse_job_progress,
+)
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 router: APIRouter = APIRouter(prefix="/v1")
 
 _NOT_IMPLEMENTED_STATUS: int = 501
+
+# Requested image format to the content type the artifact is served as.
+_IMAGE_MIME_TYPES: dict[str, str] = {
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "webp": "image/webp",
+}
 
 # send_prompt_streaming takes only the prompt and other_params. These fields
 # have nowhere to go on the streaming path, so a request that sets them is
@@ -816,3 +855,259 @@ async def cancel_batch(
     client = get_completions_client(engine, model)
     job = await run_in_threadpool(client.cancel_batch, batch_id)
     return _batch_job(job, engine, model)
+
+
+# --- Generated media ---------------------------------------------------------
+#
+# Images and video both produce bytes too large to sit in a JSON body, so the
+# generating call returns a manifest and the bytes are fetched separately from
+# /v1/artifacts/{id}/content. That split is what makes a progress bar possible:
+# the fetch sends Content-Length, and a client draws its bar from bytes read
+# against that. It is also what makes a failed transfer cheap, since the fetch
+# honours Range and generation has already been paid for.
+#
+# Images are generated inline because they take seconds. Video takes minutes,
+# which is longer than a request should live, so it becomes a job and progress
+# is published rather than measured — there are no bytes yet to measure.
+
+
+def _caller_of(request: Request) -> str:
+    """Return the label artifacts are stored under for this request.
+
+    Falls back to a shared bucket only when authentication is disabled, which
+    is local development. In a deployment every request carries a label, so one
+    caller's artifacts are never reachable with another caller's key.
+    """
+    return getattr(request.state, "api_key_label", "anonymous")
+
+
+def _artifact_ref(record: ArtifactRecord) -> ArtifactRef:
+    """Convert a stored artifact into the reference a caller fetches with."""
+    return ArtifactRef(
+        artifact_id=record.artifact_id,
+        mime_type=record.mime_type,
+        size_bytes=record.size_bytes,
+        kind=record.kind,
+        url_path=f"/v1/artifacts/{record.artifact_id}/content",
+    )
+
+
+def _job_response(record: JobRecord, refs: list[ArtifactRef]) -> JobResponse:
+    """Convert a stored job record into its response shape."""
+    return JobResponse(
+        job_id=record.job_id,
+        status=record.status,
+        percent=record.percent,
+        estimated=record.estimated,
+        artifacts=refs,
+        error=record.error,
+        engine=record.engine,
+        model=record.model,
+    )
+
+
+@router.post(
+    "/images",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    summary="Generate images and store them for streaming",
+)
+async def images(request: Request, body: ImageRequest) -> ImageResponse:
+    """Generate images, store each one, and return references to fetch them.
+
+    The bytes are not inlined. Base64 in a JSON body would inflate them by a
+    third and cap the response at what a single buffer can hold, and it would
+    give a caller no way to show progress or resume a failed transfer.
+
+    Args:
+        request: The incoming request, read for the caller's label.
+        body: Prompt and image properties.
+
+    Returns:
+        ImageResponse: One reference per generated image.
+    """
+    client = get_images_client(body.model)
+    properties = AIBaseImageProperties(
+        width=body.width,
+        height=body.height,
+        format=body.image_format,
+        quality=body.quality,
+        background=body.background,
+        num_images=body.num_images,
+    )
+    # Generation blocks and is the slow part of this call, so it runs on a
+    # worker thread rather than on the event loop.
+    blobs: list[bytes] = await run_in_threadpool(
+        client.generate_images, body.prompt, properties
+    )
+
+    caller: str = _caller_of(request)
+    mime_type: str = _IMAGE_MIME_TYPES.get(
+        body.image_format.lower(), "application/octet-stream"
+    )
+    refs: list[ArtifactRef] = []
+    for blob in blobs:
+        stored = await run_in_threadpool(
+            partial(
+                store_artifact,
+                caller,
+                blob,
+                mime_type=mime_type,
+                kind="image",
+                model=body.model,
+            )
+        )
+        refs.append(_artifact_ref(stored))
+    return ImageResponse(artifacts=refs, model=body.model)
+
+
+@router.post(
+    "/videos",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    summary="Start a video generation and return its job handle",
+)
+async def create_video(request: Request, body: VideoRequest) -> JobResponse:
+    """Begin generating a video and return immediately with a job handle.
+
+    Poll `/v1/videos/{job_id}` for status, or subscribe to
+    `/v1/videos/{job_id}/events` for progress as it changes.
+
+    Args:
+        request: The incoming request, read for the caller's label.
+        body: Prompt and video properties.
+
+    Returns:
+        JobResponse: The job, queued.
+    """
+    client = get_video_client(body.engine, body.model)
+    properties = AIBaseVideoProperties(
+        duration_seconds=body.duration_seconds,
+        aspect_ratio=body.aspect_ratio,
+        resolution=body.resolution,
+        fps=body.fps,
+        seed=body.seed,
+        output_format=body.output_format,
+        download_outputs=True,
+    )
+    caller: str = _caller_of(request)
+    record = JobRecord(
+        job_id=new_id(), status="queued", engine=body.engine, model=body.model
+    )
+    await run_in_threadpool(partial(write_job, caller, record))
+
+    # The generation outlives this request, so it is handed to a worker thread
+    # rather than awaited. On Cloud Run this needs CPU allocated outside
+    # request processing; see the README.
+    asyncio.get_running_loop().run_in_executor(
+        None, run_video_job, caller, record, client, body.prompt, properties
+    )
+    return _job_response(record, [])
+
+
+@router.get(
+    "/videos/{job_id}",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    summary="Video job status and progress",
+)
+async def video_job(request: Request, job_id: str) -> JobResponse:
+    """Report a video job's progress and, once ready, its artifacts.
+
+    Args:
+        request: The incoming request, read for the caller's label.
+        job_id: Handle returned when the job was created.
+
+    Returns:
+        JobResponse: Current status, percent, and any artifacts.
+    """
+    caller: str = _caller_of(request)
+    try:
+        record: JobRecord = await run_in_threadpool(read_job, caller, job_id)
+    except ArtifactNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return _job_response(record, await _refs_for(caller, record))
+
+
+@router.get(
+    "/videos/{job_id}/events",
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    summary="Progress events for a video job (SSE)",
+)
+async def video_job_events(request: Request, job_id: str) -> StreamingResponse:
+    """Stream a job's progress as it changes, until it finishes.
+
+    Progress during generation cannot be measured by the client, because no
+    bytes exist yet. It is published here instead, and each event says whether
+    the figure was reported by the provider or estimated from elapsed time.
+
+    Once the job is ready the caller fetches the artifact, and progress for
+    *that* phase needs nothing from the service beyond `Content-Length`.
+
+    Args:
+        request: The incoming request, read for the caller's label.
+        job_id: Handle returned when the job was created.
+
+    Returns:
+        StreamingResponse: `text/event-stream` of progress events.
+    """
+    caller: str = _caller_of(request)
+    try:
+        await run_in_threadpool(read_job, caller, job_id)
+    except ArtifactNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    return StreamingResponse(
+        sse_job_progress(caller, job_id),
+        media_type=SSE_MEDIA_TYPE,
+        headers=SSE_HEADERS,
+    )
+
+
+@router.get(
+    "/artifacts/{artifact_id}/content",
+    response_class=StreamingResponse,
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    summary="Stream a generated artifact's bytes",
+)
+async def artifact_content(request: Request, artifact_id: str) -> Response:
+    """Stream a stored artifact, with a length and resumable ranges.
+
+    `Content-Length` is always sent, which is the whole basis of a client-side
+    progress bar. `Range` is honoured, so a transfer that fails partway resumes
+    rather than starting over — generation was already paid for.
+
+    Args:
+        request: The incoming request, read for the caller's label and Range.
+        artifact_id: The artifact to fetch.
+
+    Returns:
+        Response: 200 with the whole artifact, or 206 with the requested range.
+    """
+    caller: str = _caller_of(request)
+    try:
+        record: ArtifactRecord = await run_in_threadpool(
+            read_record, caller, artifact_id
+        )
+    except ArtifactNotFoundError as error:
+        return not_found(str(error))
+    return artifact_response(request, caller, record)
+
+
+async def _refs_for(caller: str, record: JobRecord) -> list[ArtifactRef]:
+    """Resolve a job's artifact ids into references, skipping any now gone."""
+    refs: list[ArtifactRef] = []
+    for artifact_id in record.artifact_ids:
+        try:
+            stored = await run_in_threadpool(read_record, caller, artifact_id)
+        except ArtifactNotFoundError:
+            continue
+        refs.append(_artifact_ref(stored))
+    return refs

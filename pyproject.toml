@@ -1,7 +1,7 @@
 [project]
 name = "ai_api_unified_http"
 
-version = "1.5.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
+version = "1.6.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
 description = "HTTP service exposing ai-api-unified to non-Python apps"
 authors = [{ name = "Dave Thomas", email = "davidcthomas@gmail.com" }]
 license = "MIT"

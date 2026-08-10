@@ -54,6 +54,11 @@ record: 2026-08-04.
 | `GET /v1/batches/{id}` | Batch status and counts |
 | `GET /v1/batches/{id}/results` | Per-request results, once ended |
 | `POST /v1/batches/{id}/cancel` | Request cancellation |
+| `POST /v1/images` | Generate images, stored for streamed retrieval |
+| `POST /v1/videos` | Start a video generation job |
+| `GET /v1/videos/{id}` | Job status and progress |
+| `GET /v1/videos/{id}/events` | Progress events while generating (SSE) |
+| `GET /v1/artifacts/{id}/content` | Stream an artifact, resumably |
 | `GET /healthz` | Liveness and versions |
 
 Every path under `/v1` requires a bearer token. `/healthz` and the OpenAPI
@@ -61,12 +66,9 @@ documents do not.
 
 ## Out of scope for v1
 
-- **Video** — a long-running job whose output is a file, so it needs artifact
-  storage (object store + signed URLs) on top of submit/poll resources. Batch
-  text completions shared this bullet until they shipped; their results are
-  JSON through the API, so they never needed the storage decision that still
-  gates video.
-- **Images and voice** — return bytes/files; same storage decision as video.
+- **Voice** — returns audio files, and unlike images and video the useful shape
+  is usually a stream the caller plays rather than an artifact it stores.
+  Deferred until there is a consumer asking for it.
 - **Per-user identity and quotas** — API keys name calling applications, not
   people. Per-user identity, quotas, and per-caller rate limits belong behind
   an identity provider.

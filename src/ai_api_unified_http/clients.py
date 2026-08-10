@@ -33,6 +33,9 @@ PoolKey = tuple[str, str | None]
 
 _completions_pool: Final[dict[PoolKey, AIBaseCompletions]] = {}
 _embeddings_pool: Final[dict[PoolKey, AIBaseEmbeddings]] = {}
+# Image and video clients share a pool: both are keyed by model rather than
+# by an engine token, and neither has a typed base exported for annotation.
+_media_pool: Final[dict[PoolKey, Any]] = {}
 _pool_lock: Final[threading.Lock] = threading.Lock()
 
 
@@ -98,6 +101,53 @@ def get_embeddings_client(engine: str, model: str | None = None) -> AIBaseEmbedd
     return client
 
 
+def get_images_client(model: str | None = None) -> Any:
+    """Return the pooled images client for this model.
+
+    Keyed on the model alone, because the factory selects the provider from the
+    model rather than taking an engine token the way completions does.
+
+    Args:
+        model: Image model name, or None for the configured default.
+
+    Returns:
+        Any: The pooled client, built on first use.
+    """
+    key: PoolKey = ("images", model)
+    cached: Any = _media_pool.get(key)
+    if cached is not None:
+        return cached
+
+    built: Any = _build(AIFactory.get_ai_images_client, "images", image_model=model)
+    with _pool_lock:
+        return _media_pool.setdefault(key, built)
+
+
+def get_video_client(engine: str | None = None, model: str | None = None) -> Any:
+    """Return the pooled video client for this engine and model.
+
+    Args:
+        engine: Video engine token, or None for the configured default.
+        model: Video model name, or None for the configured default.
+
+    Returns:
+        Any: The pooled client, built on first use.
+    """
+    key: PoolKey = (f"video:{engine or 'default'}", model)
+    cached: Any = _media_pool.get(key)
+    if cached is not None:
+        return cached
+
+    built: Any = _build(
+        AIFactory.get_ai_video_client,
+        engine or "video",
+        model_name=model,
+        video_engine=engine,
+    )
+    with _pool_lock:
+        return _media_pool.setdefault(key, built)
+
+
 def _build(factory: Any, engine: str, **kwargs: Any) -> Any:
     """Construct a client, translating a missing-credential failure.
 
@@ -135,6 +185,7 @@ def pool_sizes() -> dict[str, int]:
     return {
         "completions": len(_completions_pool),
         "embeddings": len(_embeddings_pool),
+        "media": len(_media_pool),
     }
 
 
@@ -147,3 +198,4 @@ def reset_pools() -> None:
     with _pool_lock:
         _completions_pool.clear()
         _embeddings_pool.clear()
+        _media_pool.clear()
