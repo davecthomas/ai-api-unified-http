@@ -1024,7 +1024,7 @@
   "info": {
     "description": "HTTP interface to the ai-api-unified Python library. Breaking API changes bump the URI version (/v1 -> /v2); the service itself follows semantic versioning independently.",
     "title": "ai-api-unified-http",
-    "version": "1.4.1"
+    "version": "1.4.2"
   },
   "openapi": "3.1.0",
   "paths": {
