@@ -181,10 +181,13 @@ gcp-logs:
 # The binding is what makes that safe. It names one repository, so a token
 # minted by any other workflow anywhere on GitHub matches nothing here.
 #
-# The storage role is for Cloud Build's source staging bucket, which
-# `gcloud run deploy --source` uploads to. objectAdmin covers writing those
-# objects; storage.admin would additionally grant control over every bucket in
-# the project, including creating and deleting them, which a deploy never does.
+# The storage grants are for Cloud Build's source staging bucket, which
+# `gcloud run deploy --source` uploads to. objectAdmin covers the objects, and
+# a two-permission custom role covers finding the bucket: the deploy calls
+# storage.buckets.list and then storage.buckets.get, and no predefined role
+# carries those without also granting bucket create, delete, and IAM control,
+# which a deploy never does. Established by deploying: objectAdmin alone fails
+# on buckets.get, and adding get alone fails on buckets.list.
 #
 # Run once per project. Re-running is safe: each step tolerates the resource
 # already existing.
@@ -215,6 +218,14 @@ gcp-cicd:
 	done; echo; \
 	gcloud iam service-accounts describe "$$sa" --project=$(PROJECT) >/dev/null 2>&1 \
 		|| { echo "  service account $$sa never appeared; re-run this target"; exit 1; }; \
+	gcloud iam roles create runSourceBucketReader --project=$(PROJECT) \
+		--permissions=storage.buckets.get,storage.buckets.list \
+		--title="Run source bucket reader" 2>/dev/null || echo "  custom role runSourceBucketReader exists"; \
+	gcloud projects add-iam-policy-binding $(PROJECT) \
+		--member="serviceAccount:$$sa" --role="projects/$(PROJECT)/roles/runSourceBucketReader" \
+		--condition=None >/dev/null \
+		&& echo "  granted runSourceBucketReader (storage.buckets.get + list)" \
+		|| { echo "  FAILED to grant runSourceBucketReader"; exit 1; }; \
 	for role in roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.writer roles/storage.objectAdmin; do \
 		gcloud projects add-iam-policy-binding $(PROJECT) \
 			--member="serviceAccount:$$sa" --role="$$role" --condition=None >/dev/null \
