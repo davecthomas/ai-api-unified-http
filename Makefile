@@ -147,16 +147,32 @@ gcp-secrets:
 	done; \
 	echo "secrets ready in $(PROJECT)"
 
-# One worker keeps the rate limit meaning what it says: the counter is
-# per-process, so N workers would admit N times the configured limit.
+# Sized for a development deployment, which is what most people running this
+# will have: cheap by default, with each knob overridable for production. The
+# README explains what each one costs and when to raise it.
+#
+# One worker and one instance keep the rate limit meaning what it says. The
+# counter is per-process, so N workers or N instances would admit N times the
+# configured limit.
+MAX_INSTANCES ?= 1
+REQUEST_TIMEOUT ?= 900
+
+# Cloud Run bills CPU only while a request is in flight unless this is set.
+# A video job runs on a background thread after its response is sent, so it
+# advances while any request is in flight — a poll, or an open progress stream —
+# and stalls when nothing is. Set CPU_ALWAYS_ON=1 for fire-and-forget video;
+# leaving it unset is free and fine when someone is watching the progress bar.
+CPU_ALWAYS_ON ?=
+
 gcp-deploy:
 	$(call require_project)
 	gcloud run deploy $(SERVICE) --project=$(PROJECT) --region=$(REGION) \
 		--source . --allow-unauthenticated \
-		--memory 512Mi --cpu 1 --concurrency 40 --max-instances 3 --timeout 3600 \
+		--memory 512Mi --cpu 1 --concurrency 40 \
+		--max-instances $(MAX_INSTANCES) --timeout $(REQUEST_TIMEOUT) \
 		--add-volume=name=artifacts,type=cloud-storage,bucket=$(BUCKET) \
 		--add-volume-mount=volume=artifacts,mount-path=/artifacts \
-		--no-cpu-throttling \
+		$(if $(CPU_ALWAYS_ON),--no-cpu-throttling,) \
 		--set-env-vars "COMPLETIONS_ENGINE=claude,HTTP_RATE_LIMIT=60,LOG_LEVEL=INFO,WEB_CONCURRENCY=1,HTTP_CLIENT_IP_FROM_XFF=1,HTTP_ARTIFACT_DIR=/artifacts,HTTP_CORS_ORIGINS=$(CORS_ORIGINS)" \
 		--set-secrets "HTTP_API_KEYS=HTTP_API_KEYS:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GOOGLE_GEMINI_API_KEY=GOOGLE_GEMINI_API_KEY:latest" \
 		--quiet

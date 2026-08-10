@@ -226,10 +226,7 @@ Generated images and video need a bucket, created once:
 make gcp-artifacts PROJECT=your-project-id
 ```
 
-`make gcp-deploy` mounts it at `/artifacts` and deploys with CPU allocated
-outside request processing, which a video job needs — its generation outlives
-the request that started it, and a throttled instance would stall the moment
-the response was sent.
+`make gcp-deploy` mounts it at `/artifacts`.
 
 `make gcp-secrets` reads the local `.env`, writes each provider key to Secret
 Manager, and grants the runtime service account access. Keys reach the
@@ -241,6 +238,48 @@ service's environment configuration.
 Cloud Run answers `/healthz` at its own frontend and never forwards it to the
 container. Use `/health` for health checks there; both paths return the same
 body everywhere else.
+
+### Development defaults, and what production needs
+
+The deploy is sized for a development instance, because that is what most
+people running this have. Every setting below is a make variable, so
+production is an override rather than an edit.
+
+**`MAX_INSTANCES=1`.** A ceiling on how much this can ever cost, and it is
+also what makes the rate limit mean what it says: the counter is per process,
+so N instances admit N times the configured limit. Raise it when real traffic
+needs the throughput, and raise `HTTP_RATE_LIMIT` deliberately rather than by
+accident.
+
+**`REQUEST_TIMEOUT=900`.** Fifteen minutes, which covers a ten-minute progress
+stream with headroom. Cloud Run permits an hour; a longer ceiling mostly means
+a stuck request can bill for longer.
+
+**`CPU_ALWAYS_ON` unset.** This is the one worth understanding. Cloud Run bills
+CPU only while a request is in flight, and CPU is allocated per instance rather
+than per request. A video job runs on a background thread after its response is
+sent, so it advances while *any* request is in flight — a status poll, or an
+open progress stream — and stalls when nothing is.
+
+For someone watching a progress bar that is fine, and free. It is not fine for
+fire-and-forget: start a video, close the tab, and the job may sit where you
+left it. `CPU_ALWAYS_ON=1` bills for the instance's whole lifetime instead,
+which for scattered use can mean hours of CPU a day and pushes past Cloud Run's
+free allowance. Set it when jobs have to finish unattended, not before.
+
+Images are unaffected: they generate inside the request that asked for them.
+
+```bash
+make gcp-deploy PROJECT=your-project-id                       # development
+make gcp-deploy PROJECT=your-project-id \
+  MAX_INSTANCES=5 CPU_ALWAYS_ON=1 CORS_ORIGINS=https://your.app   # production
+```
+
+Two other costs are worth naming. `HTTP_ARTIFACT_TTL_SECONDS` and the bucket's
+lifecycle rule decide how long generated media is stored and therefore billed;
+a day is enough to fetch something and short enough to forget about. And the
+service scales to zero, so an idle deployment costs nothing but the bucket,
+which costs nothing while it is empty.
 
 ### Deploying from CI
 
