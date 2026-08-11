@@ -18,12 +18,14 @@ and clients must treat that as a failed call even though the response began
 with a 200.
 """
 
+import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, Final
 
-from starlette.concurrency import iterate_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -104,3 +106,83 @@ async def sse_from_sync_iterator(
     yield format_sse(
         EVENT_DONE, {"engine": engine, "model": model, "chunks": chunk_count}
     )
+
+
+# --- Job progress ------------------------------------------------------------
+
+EVENT_PROGRESS: Final[str] = "progress"
+
+# Gap between reads of a job record while streaming its progress.
+PROGRESS_POLL_SECONDS: Final[float] = 1.0
+
+# Ceiling on how long one progress stream is held open. Each stream holds a
+# connection for its lifetime, and Cloud Run counts connections against an
+# instance's concurrency, so a job that stopped updating would otherwise
+# occupy a slot indefinitely. A caller following a longer job polls
+# GET /v1/videos/{id} and reconnects.
+PROGRESS_MAX_SECONDS: Final[float] = 600.0
+
+
+async def sse_job_progress(caller: str, job_id: str) -> AsyncIterator[str]:
+    """Emit a job's progress as it changes, then a terminal event.
+
+    Only changes are sent. A job sitting at the same percent for a minute
+    produces one event, not sixty, so a client re-renders when there is
+    something to re-render.
+
+    Args:
+        caller: API key label the job belongs to.
+        job_id: The job to follow.
+
+    Yields:
+        str: Server-sent event frames.
+    """
+    # Imported here because artifacts imports nothing from this module and the
+    # reverse import at module scope would be circular.
+    from .artifacts import ArtifactNotFoundError, job_is_finished, read_job
+
+    started: float = time.monotonic()
+    last: tuple[str, float] | None = None
+
+    while True:
+        try:
+            record = await run_in_threadpool(read_job, caller, job_id)
+        except ArtifactNotFoundError:
+            yield _frame(EVENT_ERROR, {"error": "job_not_found"})
+            return
+
+        current: tuple[str, float] = (record.status, record.percent)
+        if current != last:
+            yield _frame(
+                EVENT_PROGRESS,
+                {
+                    "job_id": record.job_id,
+                    "status": record.status,
+                    "percent": record.percent,
+                    "estimated": record.estimated,
+                },
+            )
+            last = current
+
+        if job_is_finished(record):
+            if record.status == "failed":
+                yield _frame(
+                    EVENT_ERROR, {"error": record.error or "generation failed"}
+                )
+            else:
+                yield _frame(
+                    EVENT_DONE,
+                    {"job_id": record.job_id, "artifact_ids": record.artifact_ids},
+                )
+            return
+
+        if time.monotonic() - started > PROGRESS_MAX_SECONDS:
+            yield _frame(EVENT_ERROR, {"error": "progress stream timed out"})
+            return
+
+        await asyncio.sleep(PROGRESS_POLL_SECONDS)
+
+
+def _frame(event: str, payload: dict[str, Any]) -> str:
+    """Format one server-sent event."""
+    return f"event: {event}\ndata: {json.dumps(payload)}\n\n"

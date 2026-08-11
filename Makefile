@@ -14,7 +14,7 @@ DEV_ENV = HTTP_API_KEYS="local:$(DEV_API_KEY)"
 # Sibling checkouts to copy a working .env from, in preference order.
 ENV_SOURCES = ../ai_api_unified/.env ../sample_ai_api_unified/.env
 
-.PHONY: help install lint test serve smoke env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs gcp-cicd client
+.PHONY: help install lint test serve smoke env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs gcp-cicd gcp-artifacts client
 
 help:
 	@echo "env          copy a working .env from a sibling ai_api_unified checkout"
@@ -29,6 +29,7 @@ help:
 	@echo "  Google Cloud Run (all take PROJECT=<project-id>)"
 	@echo "gcp-project  create the project, link BILLING=<account-id>, enable APIs"
 	@echo "gcp-secrets  push provider keys from .env into Secret Manager"
+	@echo "gcp-artifacts create the artifact bucket and its expiry rule (once)"
 	@echo "gcp-deploy   build with Cloud Build and deploy"
 	@echo "gcp-url      print the deployed service URL"
 	@echo "gcp-logs     tail recent service logs"
@@ -146,19 +147,66 @@ gcp-secrets:
 	done; \
 	echo "secrets ready in $(PROJECT)"
 
-# One worker keeps the rate limit meaning what it says: the counter is
-# per-process, so N workers would admit N times the configured limit.
+# Sized for a development deployment, which is what most people running this
+# will have: cheap by default, with each knob overridable for production. The
+# README explains what each one costs and when to raise it.
+#
+# One worker and one instance keep the rate limit meaning what it says. The
+# counter is per-process, so N workers or N instances would admit N times the
+# configured limit.
+MAX_INSTANCES ?= 1
+REQUEST_TIMEOUT ?= 900
+
+# Cloud Run bills CPU only while a request is in flight unless this is set.
+# A video job runs on a background thread after its response is sent, so it
+# advances while any request is in flight — a poll, or an open progress stream —
+# and stalls when nothing is. Set CPU_ALWAYS_ON=1 for fire-and-forget video;
+# leaving it unset is free and fine when someone is watching the progress bar.
+CPU_ALWAYS_ON ?=
+
 gcp-deploy:
 	$(call require_project)
 	gcloud run deploy $(SERVICE) --project=$(PROJECT) --region=$(REGION) \
 		--source . --allow-unauthenticated \
-		--memory 512Mi --cpu 1 --concurrency 40 --max-instances 3 --timeout 3600 \
-		--set-env-vars "COMPLETIONS_ENGINE=claude,HTTP_RATE_LIMIT=60,LOG_LEVEL=INFO,WEB_CONCURRENCY=1,HTTP_CLIENT_IP_FROM_XFF=1,HTTP_CORS_ORIGINS=$(CORS_ORIGINS)" \
+		--memory 512Mi --cpu 1 --concurrency 40 \
+		--max-instances $(MAX_INSTANCES) --timeout $(REQUEST_TIMEOUT) \
+		--add-volume=name=artifacts,type=cloud-storage,bucket=$(BUCKET) \
+		--add-volume-mount=volume=artifacts,mount-path=/artifacts \
+		$(if $(CPU_ALWAYS_ON),--no-cpu-throttling,) \
+		--set-env-vars "COMPLETIONS_ENGINE=claude,HTTP_RATE_LIMIT=60,LOG_LEVEL=INFO,WEB_CONCURRENCY=1,HTTP_CLIENT_IP_FROM_XFF=1,HTTP_ARTIFACT_DIR=/artifacts,HTTP_CORS_ORIGINS=$(CORS_ORIGINS)" \
 		--set-secrets "HTTP_API_KEYS=HTTP_API_KEYS:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GOOGLE_GEMINI_API_KEY=GOOGLE_GEMINI_API_KEY:latest" \
 		--quiet
 	@$(MAKE) --no-print-directory gcp-url PROJECT=$(PROJECT)
 
 CORS_ORIGINS ?= http://localhost:3000
+
+# Bucket for generated images and video, mounted into the service as a path.
+#
+# Generation is the expensive step, so an artifact has to outlive the request
+# that made it: a dropped transfer is then a re-download rather than a
+# re-generation. It cannot live in the container — Cloud Run's filesystem is
+# in-memory, and with several instances a retry usually reaches one that never
+# held the bytes.
+#
+# The lifecycle rule is the deletion mechanism. A service that scales to zero
+# cannot be relied on to sweep, so the bucket does it.
+BUCKET ?= $(PROJECT)-artifacts
+ARTIFACT_TTL_DAYS ?= 1
+
+gcp-artifacts:
+	$(call require_project)
+	@gcloud storage buckets create gs://$(BUCKET) --project=$(PROJECT) \
+		--location=$(REGION) --uniform-bucket-level-access 2>/dev/null \
+		|| echo "  bucket gs://$(BUCKET) exists"
+	@printf '{"rule":[{"action":{"type":"Delete"},"condition":{"age":%s}}]}' $(ARTIFACT_TTL_DAYS) > /tmp/artifact-lifecycle.json
+	@gcloud storage buckets update gs://$(BUCKET) --lifecycle-file=/tmp/artifact-lifecycle.json --project=$(PROJECT) >/dev/null
+	@rm -f /tmp/artifact-lifecycle.json
+	@echo "  lifecycle: delete after $(ARTIFACT_TTL_DAYS) day(s)"
+	@num=$$(gcloud projects describe $(PROJECT) --format="value(projectNumber)"); \
+	gcloud storage buckets add-iam-policy-binding gs://$(BUCKET) --project=$(PROJECT) \
+		--member="serviceAccount:$$num-compute@developer.gserviceaccount.com" \
+		--role="roles/storage.objectAdmin" >/dev/null; \
+	echo "  runtime service account can read and write gs://$(BUCKET)"
 
 gcp-url:
 	$(call require_project)

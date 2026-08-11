@@ -38,6 +38,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/artifacts/{artifact_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream a generated artifact's bytes
+         * @description Stream a stored artifact, with a length and resumable ranges.
+         *
+         *     `Content-Length` is always sent, which is the whole basis of a client-side
+         *     progress bar. `Range` is honoured, so a transfer that fails partway resumes
+         *     rather than starting over — generation was already paid for.
+         *
+         *     Args:
+         *         request: The incoming request, read for the caller's label and Range.
+         *         artifact_id: The artifact to fetch.
+         *
+         *     Returns:
+         *         Response: 200 with the whole artifact, or 206 with the requested range.
+         */
+        get: operations["artifact_content_v1_artifacts__artifact_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/batches": {
         parameters: {
             query?: never;
@@ -240,6 +271,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate images and store them for streaming
+         * @description Generate images, store each one, and return references to fetch them.
+         *
+         *     The bytes are not inlined. Base64 in a JSON body would inflate them by a
+         *     third and cap the response at what a single buffer can hold, and it would
+         *     give a caller no way to show progress or resume a failed transfer.
+         *
+         *     Args:
+         *         request: The incoming request, read for the caller's label.
+         *         body: Prompt and image properties.
+         *
+         *     Returns:
+         *         ImageResponse: One reference per generated image.
+         */
+        post: operations["images_v1_images_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/models": {
         parameters: {
             query?: never;
@@ -328,10 +390,130 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/videos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a video generation and return its job handle
+         * @description Begin generating a video and return immediately with a job handle.
+         *
+         *     Poll `/v1/videos/{job_id}` for status, or subscribe to
+         *     `/v1/videos/{job_id}/events` for progress as it changes.
+         *
+         *     Args:
+         *         request: The incoming request, read for the caller's label.
+         *         body: Prompt and video properties.
+         *
+         *     Returns:
+         *         JobResponse: The job, queued.
+         */
+        post: operations["create_video_v1_videos_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/videos/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Video job status and progress
+         * @description Report a video job's progress and, once ready, its artifacts.
+         *
+         *     Args:
+         *         request: The incoming request, read for the caller's label.
+         *         job_id: Handle returned when the job was created.
+         *
+         *     Returns:
+         *         JobResponse: Current status, percent, and any artifacts.
+         */
+        get: operations["video_job_v1_videos__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/videos/{job_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Progress events for a video job (SSE)
+         * @description Stream a job's progress as it changes, until it finishes.
+         *
+         *     Progress during generation cannot be measured by the client, because no
+         *     bytes exist yet. It is published here instead, and each event says whether
+         *     the figure was reported by the provider or estimated from elapsed time.
+         *
+         *     Once the job is ready the caller fetches the artifact, and progress for
+         *     *that* phase needs nothing from the service beyond `Content-Length`.
+         *
+         *     Args:
+         *         request: The incoming request, read for the caller's label.
+         *         job_id: Handle returned when the job was created.
+         *
+         *     Returns:
+         *         StreamingResponse: `text/event-stream` of progress events.
+         */
+        get: operations["video_job_events_v1_videos__job_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ArtifactRef
+         * @description Where to fetch one generated artifact, and how big it is.
+         *
+         *     The bytes are not inlined. They are fetched from `/v1/artifacts/{id}/content`,
+         *     which sends `Content-Length` so a client can draw a real progress bar, and
+         *     honours `Range` so a failed transfer resumes instead of restarting.
+         */
+        ArtifactRef: {
+            /** Artifact Id */
+            artifact_id: string;
+            /**
+             * Kind
+             * @description One of: image, video.
+             */
+            kind: string;
+            /** Mime Type */
+            mime_type: string;
+            /**
+             * Size Bytes
+             * @description Exact byte count, matching the Content-Length of a full fetch.
+             */
+            size_bytes: number;
+            /**
+             * Url Path
+             * @description Path to fetch the bytes from, relative to the service root.
+             */
+            url_path: string;
+        };
         /**
          * BatchJobResponse
          * @description A batch's identity and current state.
@@ -676,6 +858,96 @@ export interface components {
             status: string;
         };
         /**
+         * ImageRequest
+         * @description A prompt and the shape of the images wanted from it.
+         */
+        ImageRequest: {
+            /**
+             * Background
+             * @description Provider background hint.
+             * @default auto
+             */
+            background: string;
+            /** Height */
+            height?: number | null;
+            /**
+             * Image Format
+             * @description One of: png, jpeg, webp.
+             * @default png
+             */
+            image_format: string;
+            /**
+             * Model
+             * @description Image model, or null for the configured default.
+             */
+            model?: string | null;
+            /**
+             * Num Images
+             * @description How many images to generate. Capped because each one is fetched and stored before the response returns.
+             * @default 1
+             */
+            num_images: number;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Quality
+             * @description Provider quality hint.
+             * @default medium
+             */
+            quality: string;
+            /** Width */
+            width?: number | null;
+        };
+        /**
+         * ImageResponse
+         * @description What a generation produced, without the bytes.
+         */
+        ImageResponse: {
+            /** Artifacts */
+            artifacts: components["schemas"]["ArtifactRef"][];
+            /** Engine */
+            engine?: string | null;
+            /** Model */
+            model?: string | null;
+        };
+        /**
+         * JobResponse
+         * @description A generation job's progress.
+         *
+         *     `percent` is a number a UI can render directly. `estimated` says whether it
+         *     was measured or derived: providers do not all report progress, so an
+         *     estimate from elapsed time is offered rather than nothing, and is labelled
+         *     so a caller can present it honestly. An estimate never reaches 100 — only
+         *     the job finishing sets that.
+         */
+        JobResponse: {
+            /** Artifacts */
+            artifacts?: components["schemas"]["ArtifactRef"][];
+            /** Engine */
+            engine?: string | null;
+            /** Error */
+            error?: string | null;
+            /**
+             * Estimated
+             * @description True when percent is derived from elapsed time, not reported.
+             */
+            estimated: boolean;
+            /** Job Id */
+            job_id: string;
+            /** Model */
+            model?: string | null;
+            /**
+             * Percent
+             * @description Completion in [0, 100].
+             */
+            percent: number;
+            /**
+             * Status
+             * @description One of: queued, generating, ready, failed.
+             */
+            status: string;
+        };
+        /**
          * ModelInfo
          * @description Catalog entry for one model.
          *
@@ -918,6 +1190,36 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * VideoRequest
+         * @description A prompt and the shape of the video wanted from it.
+         */
+        VideoRequest: {
+            /** Aspect Ratio */
+            aspect_ratio?: string | null;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /**
+             * Engine
+             * @description Video engine, or null for the configured default.
+             */
+            engine?: string | null;
+            /** Fps */
+            fps?: number | null;
+            /** Model */
+            model?: string | null;
+            /**
+             * Output Format
+             * @default mp4
+             */
+            output_format: string;
+            /** Prompt */
+            prompt: string;
+            /** Resolution */
+            resolution?: string | null;
+            /** Seed */
+            seed?: number | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -963,6 +1265,53 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    artifact_content_v1_artifacts__artifact_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1390,6 +1739,75 @@ export interface operations {
             };
         };
     };
+    images_v1_images_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     models_v1_models_get: {
         parameters: {
             query: {
@@ -1564,6 +1982,173 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_video_v1_videos_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VideoRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    video_job_v1_videos__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    video_job_events_v1_videos__job_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
