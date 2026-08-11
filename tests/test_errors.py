@@ -244,3 +244,68 @@ def test_an_unclassified_error_still_carries_cors_headers() -> None:
     assert response.status_code == 500
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     assert response.json()["error"] == "internal_error"
+
+
+class TestUnwrappedProviderFailures:
+    """Some library paths let the provider SDK's own exception through.
+
+    A bad batch id surfaces as `anthropic.BadRequestError`, which matches no
+    registered handler, so it reached the caller as a 500 for what is plainly
+    their own 400. Found by driving the batch endpoints from the browser
+    console against a running service.
+    """
+
+    def test_a_provider_400_is_not_a_500(self) -> None:
+        import httpx
+
+        from ai_api_unified_http.errors import provider_status_of
+
+        request = httpx.Request("GET", "https://example.invalid")
+        response = httpx.Response(400, request=request, json={"error": "bad id"})
+
+        class FakeSdkError(Exception):
+            def __init__(self) -> None:
+                super().__init__("Message Batch id must have `msgbatch_` prefix.")
+                self.status_code = 400
+                self.response = response
+
+        assert provider_status_of(FakeSdkError()) == 400
+
+    def test_an_ordinary_bug_still_becomes_a_500(self) -> None:
+        # The detection has to be specific enough that a genuine defect is not
+        # quietly reported to the caller as a provider problem.
+        from ai_api_unified_http.errors import provider_status_of
+
+        assert provider_status_of(ValueError("a real bug")) is None
+        assert provider_status_of(KeyError("missing")) is None
+
+    def test_a_status_without_a_response_is_not_a_provider_failure(self) -> None:
+        from ai_api_unified_http.errors import provider_status_of
+
+        class Coincidence(Exception):
+            status_code = 400
+
+        assert provider_status_of(Coincidence()) is None
+
+    def test_a_non_integer_status_is_ignored(self) -> None:
+        from ai_api_unified_http.errors import provider_status_of
+
+        class Odd(Exception):
+            status_code = "400"
+            response = object()
+
+        assert provider_status_of(Odd()) is None
+
+    @pytest.mark.parametrize(
+        "provider_status,expected",
+        [(400, 400), (404, 400), (429, 429), (401, 502), (403, 502), (500, 502)],
+    )
+    def test_classification_matches_the_wrapped_path(
+        self, provider_status: int, expected: int
+    ) -> None:
+        # An unwrapped failure must classify identically to the same failure
+        # arriving wrapped, or the status a caller sees would depend on which
+        # library path happened to raise it.
+        from ai_api_unified_http.errors import _classify_provider_status
+
+        assert _classify_provider_status(provider_status)[0] == expected

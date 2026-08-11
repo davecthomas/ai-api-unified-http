@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.6.0
+# ai-api-unified-http 1.6.1
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -182,6 +182,19 @@ The service adds two behaviors:
 
 `HTTP_COST_LOG_PATH` sets the sink, defaulting to `cost-events.jsonl`. On Cloud
 Run, events go to stdout and land in Cloud Logging.
+
+### When a provider error is not wrapped
+
+The library translates provider failures into its own exception hierarchy on
+most paths and not on all of them: a malformed batch id arrives as the
+provider SDK's own exception, which matches no handler and would otherwise
+reach the caller as a 500 for what is plainly their own 400.
+
+Anything carrying both an HTTP status and the response it came from is
+therefore classified the same way a wrapped failure is, so the status a caller
+sees does not depend on which library path happened to raise. An exception
+without that pair stays a 500, because a genuine defect must not be reported as
+a provider problem.
 
 ## Run
 
