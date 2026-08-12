@@ -104,3 +104,7 @@ HTTP_ARTIFACT_DIR=artifacts
 # How long an artifact is served. The bucket's lifecycle rule does the actual
 # deleting; this stops the service serving something about to be removed.
 HTTP_ARTIFACT_TTL_SECONDS=86400
+
+# Voice engine for /v1/voices and /v1/speech. No default: unset, both answer
+# 503 naming this variable. Known values: openai, google.
+AI_VOICE_ENGINE=openai

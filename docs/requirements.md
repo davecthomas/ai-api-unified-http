@@ -59,12 +59,20 @@ record: 2026-08-04.
 | `GET /v1/videos/{id}` | Job status and progress |
 | `GET /v1/videos/{id}/events` | Progress events while generating (SSE) |
 | `GET /v1/artifacts/{id}/content` | Stream an artifact, resumably |
+| `GET /v1/voices` | Voice catalogue, formats, and engine capabilities |
+| `POST /v1/speech` | Text to speech, stored for streamed retrieval |
 | `GET /healthz` | Liveness and versions |
 
 Every path under `/v1` requires a bearer token. `/healthz` and the OpenAPI
 documents do not.
 
 ## Out of scope for v1
+
+- **Speech to text** — the input half of voice. The catalogue reports whether
+  an engine supports it; no endpoint offers it yet. It takes audio in, which is
+  the attachment shape completions already use.
+
+Voice output shipped in 1.8.0. The earlier note read:
 
 - **Voice** — unexposed rather than blocked. The library carries a full voice
   surface (text to speech, speech to text, a voice catalogue) and constructs it

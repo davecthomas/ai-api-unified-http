@@ -41,6 +41,14 @@ MAX_IMAGES_PER_REQUEST: Final[int] = 4
 # decode before handing them over.
 MAX_ATTACHMENTS: Final[int] = 8
 
+# Longest text one speech request will synthesize.
+MAX_SPEECH_CHARS: Final[int] = 20_000
+
+# Voices returned by the catalogue in one response. Google publishes over two
+# thousand, so an unfiltered list is a payload rather than a menu. The response
+# reports the true total alongside the page, and `locale` narrows it.
+MAX_VOICES_RETURNED: Final[int] = 200
+
 
 class EngineSelection(BaseModel):
     """Common provider-selection fields accepted by every model-invoking route."""
@@ -555,6 +563,103 @@ class JobResponse(BaseModel):
     error: str | None = None
     engine: str | None = None
     model: str | None = None
+
+
+class VoiceInfo(BaseModel):
+    """One voice a caller can ask for by id."""
+
+    voice_id: str
+    voice_name: str | None = None
+    language: str | None = None
+    accent: str | None = None
+    locale: str | None = None
+    gender: str | None = None
+
+
+class AudioFormatInfo(BaseModel):
+    """One output format this engine can produce."""
+
+    key: str = Field(description="Pass this back as `audio_format`.")
+    description: str | None = None
+    file_extension: str | None = None
+    sample_rate_hz: int | None = None
+
+
+class VoiceCapabilities(BaseModel):
+    """What the configured voice engine can and cannot do.
+
+    Engines differ enough that a caller cannot assume. OpenAI streams and has
+    no emotion control; Google has emotion control and speech to text and does
+    not stream. Reading this before building a request avoids finding out by
+    being refused.
+    """
+
+    supports_ssml: bool | None = None
+    supports_streaming: bool | None = None
+    supports_speech_to_text: bool | None = None
+    supports_emotion_control: bool | None = None
+    supports_word_timestamps: bool | None = None
+    min_speaking_rate: float | None = None
+    max_speaking_rate: float | None = None
+
+
+class VoiceCatalogResponse(BaseModel):
+    """Everything needed to build a speech request for this deployment."""
+
+    engine: str
+    voices: list[VoiceInfo]
+    total_voices: int = Field(
+        description=(
+            "How many voices the engine has, which may exceed the number "
+            "returned. Narrow with the `locale` query parameter."
+        )
+    )
+    audio_formats: list[AudioFormatInfo]
+    capabilities: VoiceCapabilities
+    default_voice_id: str | None = None
+    default_audio_format: str | None = None
+
+
+class SpeechRequest(BaseModel):
+    """Text to synthesize, and how it should sound.
+
+    The result is stored rather than inlined, exactly as a generated image is,
+    so it comes back as a reference and is fetched with a progress bar and a
+    resumable range.
+    """
+
+    text: str = Field(max_length=MAX_SPEECH_CHARS)
+    voice_id: str | None = Field(
+        default=None, description="From /v1/voices; omit for the engine's default."
+    )
+    audio_format: str | None = Field(
+        default=None,
+        description="An `audio_formats.key` from /v1/voices; omit for the default.",
+    )
+    speaking_rate: float = Field(default=1.0, gt=0.0, le=4.0)
+    use_ssml: bool = Field(
+        default=False,
+        description="Treat the text as SSML. Refused when the engine reports no SSML support.",
+    )
+    emotion_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Direction for delivery, e.g. 'sound cheerful'. Refused when the "
+            "engine reports no emotion control."
+        ),
+    )
+
+
+class SpeechResponse(BaseModel):
+    """A synthesized clip, addressed rather than inlined."""
+
+    artifact: ArtifactRef
+    engine: str
+    voice_id: str | None = None
+    audio_format: str | None = None
+    duration_seconds: float | None = Field(
+        default=None, description="Length of the clip, when the engine can measure it."
+    )
 
 
 class ErrorResponse(BaseModel):

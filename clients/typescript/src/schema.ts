@@ -336,6 +336,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/speech": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Synthesize speech and store it for streaming
+         * @description Turn text into audio, store it, and return a reference to fetch it.
+         *
+         *     Args:
+         *         http_request: The incoming request, read for the caller's label so the
+         *             clip is stored under the caller who asked for it.
+         *         request: Text, voice, format, and delivery options.
+         *
+         *     Returns:
+         *         SpeechResponse: A reference to the stored clip.
+         */
+        post: operations["speech_v1_speech_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/structured": {
         parameters: {
             query?: never;
@@ -483,6 +511,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/voices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Voices, output formats, and what this engine supports
+         * @description List the voices and formats available, with the engine's capabilities.
+         *
+         *     Args:
+         *         locale: Restrict to one locale, e.g. `en-US`. Worth using: an engine
+         *             may publish thousands of voices, and the response returns a page
+         *             while reporting the true total.
+         *
+         *     Returns:
+         *         VoiceCatalogResponse: Voices, formats, capabilities, and defaults.
+         */
+        get: operations["voices_v1_voices_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -548,6 +604,23 @@ export interface components {
              * @description Content type of the attached bytes, required with `data`. Taken from the stored artifact when `artifact_id` is used instead.
              */
             mime_type?: string | null;
+        };
+        /**
+         * AudioFormatInfo
+         * @description One output format this engine can produce.
+         */
+        AudioFormatInfo: {
+            /** Description */
+            description?: string | null;
+            /** File Extension */
+            file_extension?: string | null;
+            /**
+             * Key
+             * @description Pass this back as `audio_format`.
+             */
+            key: string;
+            /** Sample Rate Hz */
+            sample_rate_hz?: number | null;
         };
         /**
          * BatchJobResponse
@@ -1046,6 +1119,62 @@ export interface components {
             /** Models */
             models: string[];
         };
+        /**
+         * SpeechRequest
+         * @description Text to synthesize, and how it should sound.
+         *
+         *     The result is stored rather than inlined, exactly as a generated image is,
+         *     so it comes back as a reference and is fetched with a progress bar and a
+         *     resumable range.
+         */
+        SpeechRequest: {
+            /**
+             * Audio Format
+             * @description An `audio_formats.key` from /v1/voices; omit for the default.
+             */
+            audio_format?: string | null;
+            /**
+             * Emotion Prompt
+             * @description Direction for delivery, e.g. 'sound cheerful'. Refused when the engine reports no emotion control.
+             */
+            emotion_prompt?: string | null;
+            /**
+             * Speaking Rate
+             * @default 1
+             */
+            speaking_rate: number;
+            /** Text */
+            text: string;
+            /**
+             * Use Ssml
+             * @description Treat the text as SSML. Refused when the engine reports no SSML support.
+             * @default false
+             */
+            use_ssml: boolean;
+            /**
+             * Voice Id
+             * @description From /v1/voices; omit for the engine's default.
+             */
+            voice_id?: string | null;
+        };
+        /**
+         * SpeechResponse
+         * @description A synthesized clip, addressed rather than inlined.
+         */
+        SpeechResponse: {
+            artifact: components["schemas"]["ArtifactRef"];
+            /** Audio Format */
+            audio_format?: string | null;
+            /**
+             * Duration Seconds
+             * @description Length of the clip, when the engine can measure it.
+             */
+            duration_seconds?: number | null;
+            /** Engine */
+            engine: string;
+            /** Voice Id */
+            voice_id?: string | null;
+        };
         /** StructuredRequest */
         StructuredRequest: {
             /**
@@ -1259,6 +1388,71 @@ export interface components {
             resolution?: string | null;
             /** Seed */
             seed?: number | null;
+        };
+        /**
+         * VoiceCapabilities
+         * @description What the configured voice engine can and cannot do.
+         *
+         *     Engines differ enough that a caller cannot assume. OpenAI streams and has
+         *     no emotion control; Google has emotion control and speech to text and does
+         *     not stream. Reading this before building a request avoids finding out by
+         *     being refused.
+         */
+        VoiceCapabilities: {
+            /** Max Speaking Rate */
+            max_speaking_rate?: number | null;
+            /** Min Speaking Rate */
+            min_speaking_rate?: number | null;
+            /** Supports Emotion Control */
+            supports_emotion_control?: boolean | null;
+            /** Supports Speech To Text */
+            supports_speech_to_text?: boolean | null;
+            /** Supports Ssml */
+            supports_ssml?: boolean | null;
+            /** Supports Streaming */
+            supports_streaming?: boolean | null;
+            /** Supports Word Timestamps */
+            supports_word_timestamps?: boolean | null;
+        };
+        /**
+         * VoiceCatalogResponse
+         * @description Everything needed to build a speech request for this deployment.
+         */
+        VoiceCatalogResponse: {
+            /** Audio Formats */
+            audio_formats: components["schemas"]["AudioFormatInfo"][];
+            capabilities: components["schemas"]["VoiceCapabilities"];
+            /** Default Audio Format */
+            default_audio_format?: string | null;
+            /** Default Voice Id */
+            default_voice_id?: string | null;
+            /** Engine */
+            engine: string;
+            /**
+             * Total Voices
+             * @description How many voices the engine has, which may exceed the number returned. Narrow with the `locale` query parameter.
+             */
+            total_voices: number;
+            /** Voices */
+            voices: components["schemas"]["VoiceInfo"][];
+        };
+        /**
+         * VoiceInfo
+         * @description One voice a caller can ask for by id.
+         */
+        VoiceInfo: {
+            /** Accent */
+            accent?: string | null;
+            /** Gender */
+            gender?: string | null;
+            /** Language */
+            language?: string | null;
+            /** Locale */
+            locale?: string | null;
+            /** Voice Id */
+            voice_id: string;
+            /** Voice Name */
+            voice_name?: string | null;
         };
     };
     responses: never;
@@ -1906,6 +2100,75 @@ export interface operations {
             };
         };
     };
+    speech_v1_speech_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     structured_v1_structured_post: {
         parameters: {
             query?: never;
@@ -2189,6 +2452,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    voices_v1_voices_get: {
+        parameters: {
+            query?: {
+                locale?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoiceCatalogResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
