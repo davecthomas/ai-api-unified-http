@@ -77,18 +77,17 @@ _PROVIDER_AUTH_STATUSES: Final[frozenset[int]] = frozenset({401, 403})
 _BAD_GATEWAY: Final[int] = 502
 
 
-def _status_for_request_error(error: AiProviderRequestError) -> tuple[int, str]:
-    """Classify a provider HTTP failure into a service status and error code.
+def _classify_provider_status(provider_status: int | None) -> tuple[int, str]:
+    """Map a provider's HTTP status onto this service's status and error code.
 
     Args:
-        error: The provider request failure, carrying the provider's status.
+        provider_status: Status the provider reported, or None when the call
+            failed before it had one.
 
     Returns:
         tuple[int, str]: HTTP status to return, and the machine-readable
             error code for the response body.
     """
-    provider_status: int | None = error.status_code
-
     if provider_status is None:
         # No status means the call failed before one existed: a connection
         # error or a client-side timeout. Both are upstream faults.
@@ -102,6 +101,38 @@ def _status_for_request_error(error: AiProviderRequestError) -> tuple[int, str]:
     # Remaining 4xx: the provider rejected the request we built from caller
     # input, so the caller can act on it (unknown model, oversized prompt).
     return 400, "provider_rejected_request"
+
+
+def _status_for_request_error(error: AiProviderRequestError) -> tuple[int, str]:
+    """Classify a library provider failure, which carries the provider's status."""
+    return _classify_provider_status(error.status_code)
+
+
+def provider_status_of(error: Exception) -> int | None:
+    """Return the HTTP status a raw provider SDK exception carries, if any.
+
+    The library wraps provider failures into its own hierarchy on the paths it
+    was designed around, and does not on all of them — a bad batch id surfaces
+    as `anthropic.BadRequestError`, which no handler here matches, so it would
+    reach the caller as a 500 for what is plainly their own 400.
+
+    Detection is by shape rather than by type, because the provider SDKs are
+    optional extras: importing them to catch them would make this module fail
+    on a deployment that installed only some of them. Every SDK in use raises
+    HTTP failures as an exception carrying both a status and the response it
+    came from, and that pair is specific enough not to match an ordinary bug.
+
+    Args:
+        error: The exception that escaped.
+
+    Returns:
+        int | None: The provider's HTTP status, or None when this is not a
+            provider HTTP failure and should stay a 500.
+    """
+    status: object = getattr(error, "status_code", None)
+    if not isinstance(status, int) or not hasattr(error, "response"):
+        return None
+    return status
 
 
 def _error_response(
@@ -280,7 +311,23 @@ class ErrorEnvelopeMiddleware(BaseHTTPMiddleware):
         """Run the request, converting an unhandled failure into the envelope."""
         try:
             return await call_next(request)
-        except Exception:
+        except Exception as error:
+            provider_status: int | None = provider_status_of(error)
+            if provider_status is not None:
+                status_code, error_code = _classify_provider_status(provider_status)
+                logger.warning(
+                    "unwrapped provider failure on %s: provider_status=%s -> %s",
+                    request.url.path,
+                    provider_status,
+                    status_code,
+                )
+                return _error_response(
+                    status_code=status_code,
+                    error_code=error_code,
+                    detail=str(error),
+                    provider_status=provider_status,
+                )
+
             request_id: str = uuid.uuid4().hex[:12]
             logger.exception(
                 "unhandled error serving %s %s [request_id=%s]",
