@@ -10,6 +10,8 @@ docs/technical-design.md.
 """
 
 import asyncio
+import base64
+import binascii
 import logging
 from collections import Counter
 from collections.abc import Iterator
@@ -25,6 +27,7 @@ from ai_api_unified import (
     AIFactory,
     AiProviderCapabilityUnsupportedError,
     AITool,
+    SupportedDataType,
     get_model_info,
 )
 from ai_api_unified.pricing import DICT_MODEL_INFO
@@ -39,6 +42,7 @@ from .artifacts import (
     JobRecord,
     new_id,
     read_job,
+    read_range,
     read_record,
     store_artifact,
     write_job,
@@ -59,6 +63,7 @@ from .delivery import artifact_response, not_found
 from .jobs import run_video_job
 from .schemas import (
     ArtifactRef,
+    Attachment,
     BatchJobResponse,
     BatchResultItem,
     BatchResultsResponse,
@@ -115,6 +120,138 @@ _FIELDS_UNSUPPORTED_WHEN_STREAMING: tuple[str, ...] = (
     "max_response_tokens",
     "request_timeout_seconds",
 )
+
+
+# MIME prefix to the library's vocabulary for it. The service infers the type
+# and lets the library decide whether that type is acceptable on this call, so
+# the day completions accept audio or PDF, this endpoint does too with no
+# change here. Today the library allows images and refuses the rest.
+_MIME_DATA_TYPES: tuple[tuple[str, Any], ...] = (
+    ("image/", SupportedDataType.IMAGE),
+    ("audio/", SupportedDataType.AUDIO),
+    ("video/", SupportedDataType.VIDEO),
+    ("application/pdf", SupportedDataType.PDF),
+    ("text/", SupportedDataType.TEXT),
+)
+
+
+def _data_type_for(mime_type: str) -> Any:
+    """Map a MIME type onto the library's data-type vocabulary.
+
+    Raises:
+        HTTPException: 400 when the type is one the library has no name for,
+            which it could not accept in any case.
+    """
+    lowered: str = mime_type.strip().lower()
+    for prefix, data_type in _MIME_DATA_TYPES:
+        if lowered.startswith(prefix):
+            return data_type
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Attachment mime_type {mime_type!r} is not one this service can "
+            f"classify. Expected an image/, audio/, video/, text/ type or "
+            f"application/pdf."
+        ),
+    )
+
+
+def _attachment_bytes(caller: str, attachment: Attachment) -> tuple[bytes, str]:
+    """Resolve one attachment to its bytes and content type.
+
+    Args:
+        caller: API key label, which scopes any artifact lookup.
+        attachment: The caller's attachment declaration.
+
+    Returns:
+        tuple[bytes, str]: The bytes and their MIME type.
+
+    Raises:
+        HTTPException: 400 when the declaration is unusable, 404 when an
+            artifact id names nothing this caller may read.
+    """
+    has_data: bool = attachment.data is not None
+    has_artifact: bool = attachment.artifact_id is not None
+    if has_data == has_artifact:
+        raise HTTPException(
+            status_code=400,
+            detail="Each attachment needs exactly one of data or artifact_id.",
+        )
+
+    if has_artifact:
+        try:
+            record = read_record(caller, attachment.artifact_id or "")
+        except ArtifactNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        blob: bytes = b"".join(
+            read_range(caller, record.artifact_id, 0, max(record.size_bytes - 1, 0))
+        )
+        # The stored type wins over anything the caller asserted: the store
+        # knows what it wrote.
+        return blob, record.mime_type
+
+    if not attachment.mime_type:
+        raise HTTPException(
+            status_code=400,
+            detail="An attachment sent as data must give its mime_type.",
+        )
+    try:
+        return (
+            base64.b64decode(attachment.data or "", validate=True),
+            attachment.mime_type,
+        )
+    except (binascii.Error, ValueError) as error:
+        raise HTTPException(
+            status_code=400, detail=f"Attachment data is not valid base64: {error}"
+        ) from error
+
+
+def _prompt_params(
+    caller: str, request: CompletionRequest
+) -> AICompletionsPromptParamsBase | None:
+    """Build the library's prompt parameters, attachments included.
+
+    The three parallel lists the library takes have to stay aligned, and it
+    validates that alongside MIME agreement and its own size caps. Those checks
+    are not repeated here; the failure is translated instead, so a caller reads
+    the library's own reason rather than this service's paraphrase of it.
+
+    Args:
+        caller: API key label, which scopes any artifact lookup.
+        request: The completion request.
+
+    Returns:
+        AICompletionsPromptParamsBase | None: Parameters, or None when there is
+            nothing to carry.
+
+    Raises:
+        HTTPException: 400 when the library refuses the attachments.
+    """
+    attachments: list[Attachment] = request.attachments or []
+    if not attachments and not request.system_prompt:
+        return None
+
+    types: list[Any] = []
+    blobs: list[bytes] = []
+    mimes: list[str] = []
+    for attachment in attachments:
+        blob, mime_type = _attachment_bytes(caller, attachment)
+        types.append(_data_type_for(mime_type))
+        blobs.append(blob)
+        mimes.append(mime_type)
+
+    try:
+        return AICompletionsPromptParamsBase(
+            system_prompt=request.system_prompt,
+            included_types=types or None,
+            included_data=blobs or None,
+            included_mime_types=mimes or None,
+        )
+    except ValueError as error:
+        # The library's validator refuses a type this call cannot take, empty
+        # bytes, or a payload over its cap. Every one of those is the caller's
+        # to fix, and would otherwise escape as a 500.
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def _usage(usage: Any) -> TokenUsage:
@@ -422,12 +559,15 @@ def _reject_unsupported_streaming_fields(request: CompletionRequest) -> None:
     summary="Text completion (buffered or SSE stream)",
 )
 async def completions(
+    http_request: Request,
     request: CompletionRequest,
 ) -> CompletionResponse | StreamingResponse:
     """Generate a completion, buffered by default or streamed over SSE.
 
     Args:
-        request: Engine selection, prompt, and generation options.
+        http_request: The incoming request, read for the caller's label so
+            an attached artifact is looked up in that caller's own store.
+        request: Engine selection, prompt, attachments, and generation options.
 
     Returns:
         CompletionResponse | StreamingResponse: The completion text, or an SSE
@@ -435,15 +575,14 @@ async def completions(
     """
     client = get_completions_client(request.engine, request.model)
 
+    # Both call paths take the same parameters object, so attachments work on
+    # a stream exactly as they do on a buffered call.
+    params: AICompletionsPromptParamsBase | None = _prompt_params(
+        _caller_of(http_request), request
+    )
+
     if request.stream:
         _reject_unsupported_streaming_fields(request)
-        # system_prompt reaches the streaming call only through other_params;
-        # there is no keyword for it on send_prompt_streaming.
-        params: AICompletionsPromptParamsBase | None = (
-            AICompletionsPromptParamsBase(system_prompt=request.system_prompt)
-            if request.system_prompt
-            else None
-        )
         chunks: Iterator[str] = client.send_prompt_streaming(
             request.prompt, other_params=params
         )
@@ -458,6 +597,7 @@ async def completions(
         system_prompt=request.system_prompt,
         max_response_tokens=request.max_response_tokens,
         request_timeout_seconds=request.request_timeout_seconds,
+        other_params=params,
     )
     return CompletionResponse(text=text, engine=request.engine, model=request.model)
 

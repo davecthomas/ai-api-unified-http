@@ -29,7 +29,7 @@ enforcement, and middleware stay in the library.
 
 | Endpoint | Library call | Notes |
 |---|---|---|
-| `POST /v1/completions` | `asend_prompt(...)` | True coroutine; handler awaits it. |
+| `POST /v1/completions` | `asend_prompt(...)` | True coroutine; handler awaits it. Attachments travel in `other_params`, which both this and the streaming call accept. The library owns which MIME types are acceptable and validates list alignment and size caps; the service classifies the type and translates the refusal into a 400 rather than keeping its own allowlist. |
 | `POST /v1/completions` + `stream: true` | `send_prompt_streaming(...)` | Sync generator bridged to SSE via `StreamingResponse` in the threadpool. No PII redaction (library rule). No retries on streams (library rule). |
 | `POST /v1/structured` | `asend_structured_output(...)` | `data` is null on `length`/`refusal` finish reasons; surface `finish_reason` to the caller. |
 | `POST /v1/conversations/turn` | `asend_conversation(...)` | Stateless; caller sends full history each turn and executes tools itself (ADR-0018 in the library repo). |

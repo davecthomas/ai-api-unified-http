@@ -36,6 +36,11 @@ MAX_BATCH_REQUESTS: Final[int] = 1_000
 # how much it can cost.
 MAX_IMAGES_PER_REQUEST: Final[int] = 4
 
+# Attachments on a completion. The library caps the decoded bytes itself, at 20
+# MB per item and in total, so this bounds only how many the service will
+# decode before handing them over.
+MAX_ATTACHMENTS: Final[int] = 8
+
 
 class EngineSelection(BaseModel):
     """Common provider-selection fields accepted by every model-invoking route."""
@@ -49,8 +54,57 @@ class EngineSelection(BaseModel):
     )
 
 
+class Attachment(BaseModel):
+    """One non-text input attached to a prompt.
+
+    The bytes come from one of two places and exactly one must be given.
+    `data` carries them base64-encoded, which is what a JSON body allows.
+    `artifact_id` names something already in the artifact store, so an image
+    this service generated can be asked about without being downloaded and
+    uploaded again.
+
+    Which attachment types a model accepts is the library's decision, not this
+    service's: it validates the MIME type against what the provider path
+    supports and refuses the rest. Today that is images. A request carrying
+    anything else comes back as a 400 quoting the library's own reason, and
+    widening upstream widens this endpoint without a change here.
+    """
+
+    mime_type: str | None = Field(
+        default=None,
+        description=(
+            "Content type of the attached bytes, required with `data`. Taken "
+            "from the stored artifact when `artifact_id` is used instead."
+        ),
+    )
+    data: str | None = Field(
+        default=None,
+        description="Base64-encoded bytes. Mutually exclusive with artifact_id.",
+    )
+    artifact_id: str | None = Field(
+        default=None,
+        description=(
+            "An artifact previously returned by /v1/images or /v1/videos, read "
+            "from the store instead of being re-uploaded. Only the caller who "
+            "created it can attach it."
+        ),
+    )
+
+
 class CompletionRequest(EngineSelection):
     prompt: str = Field(max_length=MAX_PROMPT_CHARS)
+    attachments: list[Attachment] | None = Field(
+        default=None,
+        max_length=MAX_ATTACHMENTS,
+        description=(
+            "Non-text inputs to send with the prompt. Works on the streaming "
+            "path as well as the buffered one. Base64 inflates by a third, so "
+            "an attachment sent as `data` counts against "
+            "HTTP_MAX_REQUEST_BYTES (1 MiB by default) and will be refused "
+            "with 413 well before the library's own 20 MB cap; an "
+            "`artifact_id` carries no body weight at all."
+        ),
+    )
     system_prompt: str | None = Field(default=None, max_length=MAX_SYSTEM_PROMPT_CHARS)
     max_response_tokens: int | None = None
     request_timeout_seconds: float | None = None
