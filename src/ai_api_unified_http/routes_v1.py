@@ -52,6 +52,7 @@ from .clients import (
     get_embeddings_client,
     get_images_client,
     get_video_client,
+    get_voice_client,
 )
 from .conversation_token import (
     InvalidConversationTokenError,
@@ -62,8 +63,10 @@ from .conversation_token import (
 from .delivery import artifact_response, not_found
 from .jobs import run_video_job
 from .schemas import (
+    MAX_VOICES_RETURNED,
     ArtifactRef,
     Attachment,
+    AudioFormatInfo,
     BatchJobResponse,
     BatchResultItem,
     BatchResultsResponse,
@@ -83,6 +86,8 @@ from .schemas import (
     ModelPricing,
     ModelsResponse,
     NotImplementedResponse,
+    SpeechRequest,
+    SpeechResponse,
     StructuredRequest,
     StructuredResponse,
     TokenCountRequest,
@@ -91,6 +96,9 @@ from .schemas import (
     TokenUsage,
     ToolCall,
     VideoRequest,
+    VoiceCapabilities,
+    VoiceCatalogResponse,
+    VoiceInfo,
 )
 from .streaming import (
     SSE_HEADERS,
@@ -106,6 +114,17 @@ router: APIRouter = APIRouter(prefix="/v1")
 _NOT_IMPLEMENTED_STATUS: int = 501
 
 # Requested image format to the content type the artifact is served as.
+# Audio file extension to the content type a stored clip is served as.
+_AUDIO_MIME_TYPES: dict[str, str] = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".aac": "audio/aac",
+    ".pcm": "audio/L16",
+}
+
 _IMAGE_MIME_TYPES: dict[str, str] = {
     "png": "image/png",
     "jpeg": "image/jpeg",
@@ -1251,3 +1270,265 @@ async def _refs_for(caller: str, record: JobRecord) -> list[ArtifactRef]:
             continue
         refs.append(_artifact_ref(stored))
     return refs
+
+
+# --- Voice -------------------------------------------------------------------
+#
+# Speech output is bytes, so it takes the same shape generated images do: the
+# clip is stored and the response carries a reference, which is fetched with a
+# progress bar and a resumable range.
+#
+# The catalogue exists because engines differ in ways a caller cannot guess.
+# One streams and has no emotion control; another has emotion control and
+# speech to text and does not stream. Those answers come from the library's own
+# published capabilities rather than from a table here, so a deployment that
+# switches engines reports the truth without a code change.
+
+
+def _voice_info(voice: Any) -> VoiceInfo:
+    """Convert a library voice selection into the response model."""
+    return VoiceInfo(
+        voice_id=getattr(voice, "voice_id", ""),
+        voice_name=getattr(voice, "voice_name", None),
+        language=getattr(voice, "language", None),
+        accent=getattr(voice, "accent", None),
+        locale=getattr(voice, "locale", None),
+        gender=getattr(voice, "gender", None),
+    )
+
+
+def _audio_format_info(audio_format: Any) -> AudioFormatInfo:
+    """Convert a library audio format into the response model."""
+    return AudioFormatInfo(
+        key=getattr(audio_format, "key", ""),
+        description=getattr(audio_format, "description", None),
+        file_extension=getattr(audio_format, "file_extension", None),
+        sample_rate_hz=getattr(audio_format, "sample_rate_hz", None),
+    )
+
+
+def _resolve_voice(client: Any, voice_id: str | None) -> Any:
+    """Find the requested voice, or fall back to the engine's default.
+
+    Raises:
+        HTTPException: 400 when the id names no voice this engine has, listing
+            where to find the ones it does.
+    """
+    if voice_id is None:
+        return getattr(client, "selected_voice", None)
+    for voice in getattr(client, "list_available_voices", None) or []:
+        if getattr(voice, "voice_id", None) == voice_id:
+            return voice
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"voice_id {voice_id!r} is not offered by this engine. "
+            f"GET /v1/voices lists the ones that are."
+        ),
+    )
+
+
+def _resolve_audio_format(client: Any, key: str | None) -> Any:
+    """Find the requested output format, or fall back to the default."""
+    if key is None:
+        return getattr(client, "default_audio_format", None)
+    for audio_format in getattr(client, "list_output_formats", None) or []:
+        if getattr(audio_format, "key", None) == key:
+            return audio_format
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"audio_format {key!r} is not produced by this engine. "
+            f"GET /v1/voices lists the ones that are."
+        ),
+    )
+
+
+@router.get(
+    "/voices",
+    responses={
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    summary="Voices, output formats, and what this engine supports",
+)
+async def voices(locale: str | None = None) -> VoiceCatalogResponse:
+    """List the voices and formats available, with the engine's capabilities.
+
+    Args:
+        locale: Restrict to one locale, e.g. `en-US`. Worth using: an engine
+            may publish thousands of voices, and the response returns a page
+            while reporting the true total.
+
+    Returns:
+        VoiceCatalogResponse: Voices, formats, capabilities, and defaults.
+    """
+    client = get_voice_client()
+
+    if locale:
+        available: list[Any] = await run_in_threadpool(
+            client.get_voices_by_locale, locale
+        )
+    else:
+        available = list(getattr(client, "list_available_voices", None) or [])
+
+    capabilities: Any = getattr(client, "common_vendor_capabilities", None)
+    return VoiceCatalogResponse(
+        engine=str(getattr(client, "engine", "")),
+        voices=[_voice_info(v) for v in available[:MAX_VOICES_RETURNED]],
+        total_voices=len(available),
+        audio_formats=[
+            _audio_format_info(f)
+            for f in getattr(client, "list_output_formats", None) or []
+        ],
+        capabilities=VoiceCapabilities(
+            supports_ssml=getattr(capabilities, "supports_ssml", None),
+            supports_streaming=getattr(capabilities, "supports_streaming", None),
+            supports_speech_to_text=getattr(
+                capabilities, "supports_speech_to_text", None
+            ),
+            supports_emotion_control=getattr(
+                capabilities, "supports_emotion_control", None
+            ),
+            supports_word_timestamps=getattr(
+                capabilities, "supports_word_timestamps", None
+            ),
+            min_speaking_rate=getattr(capabilities, "min_speaking_rate", None),
+            max_speaking_rate=getattr(capabilities, "max_speaking_rate", None),
+        ),
+        default_voice_id=getattr(
+            getattr(client, "selected_voice", None), "voice_id", None
+        ),
+        default_audio_format=getattr(
+            getattr(client, "default_audio_format", None), "key", None
+        ),
+    )
+
+
+@router.post(
+    "/speech",
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    summary="Synthesize speech and store it for streaming",
+)
+async def speech(http_request: Request, request: SpeechRequest) -> SpeechResponse:
+    """Turn text into audio, store it, and return a reference to fetch it.
+
+    Args:
+        http_request: The incoming request, read for the caller's label so the
+            clip is stored under the caller who asked for it.
+        request: Text, voice, format, and delivery options.
+
+    Returns:
+        SpeechResponse: A reference to the stored clip.
+    """
+    client = get_voice_client()
+    capabilities: Any = getattr(client, "common_vendor_capabilities", None)
+
+    # These two are refused here rather than sent, because the engine publishes
+    # the answer and a request it cannot honour would otherwise be synthesized
+    # and billed with the instruction silently dropped.
+    if request.emotion_prompt and not getattr(
+        capabilities, "supports_emotion_control", False
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The {getattr(client, 'engine', 'configured')} voice engine "
+                f"reports no emotion control, so emotion_prompt cannot be "
+                f"honoured. GET /v1/voices reports what it supports."
+            ),
+        )
+    if request.use_ssml and not getattr(capabilities, "supports_ssml", False):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The {getattr(client, 'engine', 'configured')} voice engine "
+                f"reports no SSML support. Send plain text instead."
+            ),
+        )
+
+    voice: Any = _resolve_voice(client, request.voice_id)
+    audio_format: Any = _resolve_audio_format(client, request.audio_format)
+
+    # The base class defaults both to None; every concrete provider makes them
+    # required keyword arguments. A deployment whose engine published neither a
+    # default voice nor a default format cannot synthesize, and saying so beats
+    # a TypeError from inside the provider.
+    if voice is None or audio_format is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"The {getattr(client, 'engine', 'configured')} voice engine "
+                f"offers no default "
+                f"{'voice' if voice is None else 'audio format'}. Name one "
+                f"explicitly; GET /v1/voices lists what it has."
+            ),
+        )
+
+    # Synthesis blocks and is the slow part, so it runs on a worker thread.
+    if request.emotion_prompt:
+        audio: bytes = await run_in_threadpool(
+            partial(
+                client.text_to_voice_with_emotion_prompt,
+                emotion_prompt=request.emotion_prompt,
+                text_to_convert=request.text,
+                voice=voice,
+                audio_format=audio_format,
+                speaking_rate=request.speaking_rate,
+            )
+        )
+    else:
+        # Keyword-only: the concrete providers narrow the base signature and
+        # accept nothing positionally.
+        audio = await run_in_threadpool(
+            partial(
+                client.text_to_voice,
+                text_to_convert=request.text,
+                voice=voice,
+                audio_format=audio_format,
+                speaking_rate=request.speaking_rate,
+                use_ssml=request.use_ssml,
+            )
+        )
+
+    if not audio:
+        raise HTTPException(
+            status_code=502,
+            detail="The voice engine returned no audio for this request.",
+        )
+
+    extension: str = getattr(audio_format, "file_extension", "") or ""
+    stored = await run_in_threadpool(
+        partial(
+            store_artifact,
+            _caller_of(http_request),
+            audio,
+            mime_type=_AUDIO_MIME_TYPES.get(
+                extension.lower(), "application/octet-stream"
+            ),
+            kind="audio",
+            engine=str(getattr(client, "engine", "")) or None,
+        )
+    )
+
+    duration: float | None
+    try:
+        duration = await run_in_threadpool(client.get_audio_duration, audio)
+    except Exception:  # noqa: BLE001 - a missing duration must not fail the call
+        # The clip exists and has been paid for; reporting its length is a
+        # convenience, not the result.
+        duration = None
+
+    return SpeechResponse(
+        artifact=_artifact_ref(stored),
+        engine=str(getattr(client, "engine", "")),
+        voice_id=getattr(voice, "voice_id", None),
+        audio_format=getattr(audio_format, "key", None),
+        duration_seconds=duration,
+    )

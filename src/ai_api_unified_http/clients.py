@@ -23,7 +23,12 @@ harmless because clients carry no state worth preserving.
 import threading
 from typing import Any, Final
 
-from ai_api_unified import AIBaseCompletions, AIBaseEmbeddings, AIFactory
+from ai_api_unified import (
+    AIBaseCompletions,
+    AIBaseEmbeddings,
+    AIFactory,
+    AIVoiceFactory,
+)
 
 from .errors import ProviderNotConfiguredError, missing_variable_from
 
@@ -144,6 +149,31 @@ def get_video_client(engine: str | None = None, model: str | None = None) -> Any
         model_name=model,
         video_engine=engine,
     )
+    with _pool_lock:
+        return _media_pool.setdefault(key, built)
+
+
+def get_voice_client() -> Any:
+    """Return the pooled voice client for the configured engine.
+
+    Voice is constructed through its own factory, which takes no arguments and
+    reads `AI_VOICE_ENGINE` itself, so there is one client per process rather
+    than one per engine and model. Changing engine needs a restart, which is
+    true of every other setting the library reads from the environment.
+
+    Returns:
+        Any: The pooled client, built on first use.
+
+    Raises:
+        ProviderNotConfiguredError: When `AI_VOICE_ENGINE` is unset or names an
+            engine the library cannot load.
+    """
+    key: PoolKey = ("voice", None)
+    cached: Any = _media_pool.get(key)
+    if cached is not None:
+        return cached
+
+    built: Any = _build(AIVoiceFactory.create, "voice")
     with _pool_lock:
         return _media_pool.setdefault(key, built)
 

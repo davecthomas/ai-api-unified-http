@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.7.0
+# ai-api-unified-http 1.8.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -344,6 +344,8 @@ standard runners on public repositories.
 | GET | `/v1/videos/{id}` | Job status and progress |
 | GET | `/v1/videos/{id}/events` | Progress as it changes (SSE) |
 | GET | `/v1/artifacts/{id}/content` | Stream the bytes, resumably |
+| GET | `/v1/voices` | Voices, formats, and what this engine supports |
+| POST | `/v1/speech` | Synthesize speech; returns a reference, not bytes |
 | GET | `/health`, `/healthz` | Liveness and versions |
 
 ### What a call cost
@@ -503,6 +505,48 @@ by a third, so an attachment sent as `data` counts against
 with **413 before the library's cap is anywhere in sight**. Raise that setting
 for real images, or attach by `artifact_id`, which puts no weight in the body
 at all.
+
+### Speech
+
+Voice engines differ more than any other capability here, so read the catalogue
+before building a request:
+
+```bash
+curl "$BASE/v1/voices" -H "Authorization: Bearer $KEY"
+curl "$BASE/v1/voices?locale=en-GB" -H "Authorization: Bearer $KEY"
+```
+
+It reports the engine's own answers: its voices, the formats it produces, its
+defaults, and what it supports. Those differ enough to matter — OpenAI streams
+and has no emotion control, Google has emotion control and speech to text and
+does not stream. `total_voices` reports the real count even when the list is
+paged, because one engine publishes several thousand.
+
+```bash
+curl -X POST "$BASE/v1/speech" -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' \
+  -d '{"text": "The quick brown fox.", "voice_id": "nova", "audio_format": "mp3_24000"}'
+# -> {"artifact": {"artifact_id": "...", "mime_type": "audio/mpeg",
+#                  "size_bytes": 48213, "url_path": "/v1/artifacts/.../content"},
+#     "duration_seconds": 1.8, ...}
+```
+
+The clip is stored rather than inlined, like a generated image, so it is
+fetched with a progress bar and a resumable range.
+
+`emotion_prompt` and `use_ssml` are refused with a 400 when the engine reports
+no support for them. Sending them anyway would be synthesized, billed, and the
+instruction silently dropped.
+
+`AI_VOICE_ENGINE` selects the engine and has no default; without it both
+endpoints answer 503 naming the setting.
+
+**Synthesis is unverified against a live provider.** The catalogue is proven
+against a real engine; the OpenAI synthesis path raises inside
+ai-api-unified 2.22.0 — `AIVoiceOpenAI.text_to_voice` reads `self.user`, which
+`AIVoiceBase` does not define — and the Google path needs the Cloud
+Text-to-Speech API enabled on the project the credentials belong to. Both are
+outside this service.
 
 ### Batches
 

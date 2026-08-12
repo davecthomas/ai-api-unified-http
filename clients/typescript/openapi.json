@@ -81,6 +81,54 @@
         "title": "Attachment",
         "type": "object"
       },
+      "AudioFormatInfo": {
+        "description": "One output format this engine can produce.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "file_extension": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Extension"
+          },
+          "key": {
+            "description": "Pass this back as `audio_format`.",
+            "title": "Key",
+            "type": "string"
+          },
+          "sample_rate_hz": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Rate Hz"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "AudioFormatInfo",
+        "type": "object"
+      },
       "BatchJobResponse": {
         "description": "A batch's identity and current state.\n\n`batch_id` has to be presented with the same `engine` and `model` on every\nlater call. A batch lives inside one provider's account, and the client\nthat can ask about it is the one built for that engine, so the id alone\ndoes not identify it.\n\nCounts are optional because providers report different subsets, and the\nlibrary passes through what it was given rather than inventing zeros that\nwould read as measured values.",
         "properties": {
@@ -1202,6 +1250,122 @@
         "title": "ModelsResponse",
         "type": "object"
       },
+      "SpeechRequest": {
+        "description": "Text to synthesize, and how it should sound.\n\nThe result is stored rather than inlined, exactly as a generated image is,\nso it comes back as a reference and is fetched with a progress bar and a\nresumable range.",
+        "properties": {
+          "audio_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An `audio_formats.key` from /v1/voices; omit for the default.",
+            "title": "Audio Format"
+          },
+          "emotion_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Direction for delivery, e.g. 'sound cheerful'. Refused when the engine reports no emotion control.",
+            "title": "Emotion Prompt"
+          },
+          "speaking_rate": {
+            "default": 1.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 4.0,
+            "title": "Speaking Rate",
+            "type": "number"
+          },
+          "text": {
+            "maxLength": 20000,
+            "title": "Text",
+            "type": "string"
+          },
+          "use_ssml": {
+            "default": false,
+            "description": "Treat the text as SSML. Refused when the engine reports no SSML support.",
+            "title": "Use Ssml",
+            "type": "boolean"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "From /v1/voices; omit for the engine's default.",
+            "title": "Voice Id"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SpeechRequest",
+        "type": "object"
+      },
+      "SpeechResponse": {
+        "description": "A synthesized clip, addressed rather than inlined.",
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactRef"
+          },
+          "audio_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Format"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Length of the clip, when the engine can measure it.",
+            "title": "Duration Seconds"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Id"
+          }
+        },
+        "required": [
+          "artifact",
+          "engine"
+        ],
+        "title": "SpeechResponse",
+        "type": "object"
+      },
       "StructuredRequest": {
         "properties": {
           "engine": {
@@ -1709,13 +1873,228 @@
         ],
         "title": "VideoRequest",
         "type": "object"
+      },
+      "VoiceCapabilities": {
+        "description": "What the configured voice engine can and cannot do.\n\nEngines differ enough that a caller cannot assume. OpenAI streams and has\nno emotion control; Google has emotion control and speech to text and does\nnot stream. Reading this before building a request avoids finding out by\nbeing refused.",
+        "properties": {
+          "max_speaking_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Speaking Rate"
+          },
+          "min_speaking_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Speaking Rate"
+          },
+          "supports_emotion_control": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supports Emotion Control"
+          },
+          "supports_speech_to_text": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supports Speech To Text"
+          },
+          "supports_ssml": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supports Ssml"
+          },
+          "supports_streaming": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supports Streaming"
+          },
+          "supports_word_timestamps": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supports Word Timestamps"
+          }
+        },
+        "title": "VoiceCapabilities",
+        "type": "object"
+      },
+      "VoiceCatalogResponse": {
+        "description": "Everything needed to build a speech request for this deployment.",
+        "properties": {
+          "audio_formats": {
+            "items": {
+              "$ref": "#/components/schemas/AudioFormatInfo"
+            },
+            "title": "Audio Formats",
+            "type": "array"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/VoiceCapabilities"
+          },
+          "default_audio_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Audio Format"
+          },
+          "default_voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Voice Id"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "total_voices": {
+            "description": "How many voices the engine has, which may exceed the number returned. Narrow with the `locale` query parameter.",
+            "title": "Total Voices",
+            "type": "integer"
+          },
+          "voices": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceInfo"
+            },
+            "title": "Voices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "engine",
+          "voices",
+          "total_voices",
+          "audio_formats",
+          "capabilities"
+        ],
+        "title": "VoiceCatalogResponse",
+        "type": "object"
+      },
+      "VoiceInfo": {
+        "description": "One voice a caller can ask for by id.",
+        "properties": {
+          "accent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accent"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locale"
+          },
+          "voice_id": {
+            "title": "Voice Id",
+            "type": "string"
+          },
+          "voice_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Name"
+          }
+        },
+        "required": [
+          "voice_id"
+        ],
+        "title": "VoiceInfo",
+        "type": "object"
       }
     }
   },
   "info": {
     "description": "HTTP interface to the ai-api-unified Python library. Breaking API changes bump the URI version (/v1 -> /v2); the service itself follows semantic versioning independently.",
     "title": "ai-api-unified-http",
-    "version": "1.7.0"
+    "version": "1.8.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2518,6 +2897,85 @@
         "summary": "Catalogued models with capabilities, pricing, and lifecycle"
       }
     },
+    "/v1/speech": {
+      "post": {
+        "description": "Turn text into audio, store it, and return a reference to fetch it.\n\nArgs:\n    http_request: The incoming request, read for the caller's label so the\n        clip is stored under the caller who asked for it.\n    request: Text, voice, format, and delivery options.\n\nReturns:\n    SpeechResponse: A reference to the stored clip.",
+        "operationId": "speech_v1_speech_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Synthesize speech and store it for streaming"
+      }
+    },
     "/v1/structured": {
       "post": {
         "description": "Generate output validated against a caller-supplied JSON schema.\n\nArgs:\n    request: Engine selection, prompt or messages, and the response schema.\n\nReturns:\n    StructuredResponse: Parsed data with the finish reason and usage. Data\n        is null on any finish reason other than `complete`.",
@@ -2851,6 +3309,83 @@
           }
         },
         "summary": "Progress events for a video job (SSE)"
+      }
+    },
+    "/v1/voices": {
+      "get": {
+        "description": "List the voices and formats available, with the engine's capabilities.\n\nArgs:\n    locale: Restrict to one locale, e.g. `en-US`. Worth using: an engine\n        may publish thousands of voices, and the response returns a page\n        while reporting the true total.\n\nReturns:\n    VoiceCatalogResponse: Voices, formats, capabilities, and defaults.",
+        "operationId": "voices_v1_voices_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "locale",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Locale"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Voices, output formats, and what this engine supports"
       }
     }
   }
