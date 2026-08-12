@@ -66,9 +66,13 @@ documents do not.
 
 ## Out of scope for v1
 
-- **Voice** — returns audio files, and unlike images and video the useful shape
-  is usually a stream the caller plays rather than an artifact it stores.
-  Deferred until there is a consumer asking for it.
+- **Voice** — unexposed rather than blocked. The library carries a full voice
+  surface (text to speech, speech to text, a voice catalogue) and constructs it
+  through `AIVoiceFactory.create()`, which reads `AI_VOICE_ENGINE` and resolves
+  the provider through the same registry the other capabilities use. The
+  artifact store already handles audio output. What is missing is the work, not
+  a decision: an earlier version of this document deferred voice pending a
+  storage decision, which was wrong on both counts.
 - **Per-user identity and quotas** — API keys name calling applications, not
   people. Per-user identity, quotas, and per-caller rate limits belong behind
   an identity provider.

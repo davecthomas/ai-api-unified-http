@@ -204,7 +204,9 @@ export interface paths {
          * @description Generate a completion, buffered by default or streamed over SSE.
          *
          *     Args:
-         *         request: Engine selection, prompt, and generation options.
+         *         http_request: The incoming request, read for the caller's label so
+         *             an attached artifact is looked up in that caller's own store.
+         *         request: Engine selection, prompt, attachments, and generation options.
          *
          *     Returns:
          *         CompletionResponse | StreamingResponse: The completion text, or an SSE
@@ -515,6 +517,39 @@ export interface components {
             url_path: string;
         };
         /**
+         * Attachment
+         * @description One non-text input attached to a prompt.
+         *
+         *     The bytes come from one of two places and exactly one must be given.
+         *     `data` carries them base64-encoded, which is what a JSON body allows.
+         *     `artifact_id` names something already in the artifact store, so an image
+         *     this service generated can be asked about without being downloaded and
+         *     uploaded again.
+         *
+         *     Which attachment types a model accepts is the library's decision, not this
+         *     service's: it validates the MIME type against what the provider path
+         *     supports and refuses the rest. Today that is images. A request carrying
+         *     anything else comes back as a 400 quoting the library's own reason, and
+         *     widening upstream widens this endpoint without a change here.
+         */
+        Attachment: {
+            /**
+             * Artifact Id
+             * @description An artifact previously returned by /v1/images or /v1/videos, read from the store instead of being re-uploaded. Only the caller who created it can attach it.
+             */
+            artifact_id?: string | null;
+            /**
+             * Data
+             * @description Base64-encoded bytes. Mutually exclusive with artifact_id.
+             */
+            data?: string | null;
+            /**
+             * Mime Type
+             * @description Content type of the attached bytes, required with `data`. Taken from the stored artifact when `artifact_id` is used instead.
+             */
+            mime_type?: string | null;
+        };
+        /**
          * BatchJobResponse
          * @description A batch's identity and current state.
          *
@@ -647,6 +682,11 @@ export interface components {
         };
         /** CompletionRequest */
         CompletionRequest: {
+            /**
+             * Attachments
+             * @description Non-text inputs to send with the prompt. Works on the streaming path as well as the buffered one. Base64 inflates by a third, so an attachment sent as `data` counts against HTTP_MAX_REQUEST_BYTES (1 MiB by default) and will be refused with 413 well before the library's own 20 MB cap; an `artifact_id` carries no body weight at all.
+             */
+            attachments?: components["schemas"]["Attachment"][] | null;
             /**
              * Engine
              * @description Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.

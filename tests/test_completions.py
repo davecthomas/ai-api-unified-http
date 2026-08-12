@@ -12,7 +12,7 @@ already gone out.
 
 import json
 from collections.abc import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from ai_api_unified import AiProviderRequestError
@@ -77,11 +77,16 @@ class TestBuffered:
                 "request_timeout_seconds": 5.5,
             },
         )
+        # other_params now travels on the buffered path too, so attachments
+        # work there. The library documents other_params.system_prompt as
+        # winning when both are supplied, and both come from the same request
+        # field, so they agree.
         fake_client.asend_prompt.assert_awaited_once_with(
             "hi",
             system_prompt="be terse",
             max_response_tokens=128,
             request_timeout_seconds=5.5,
+            other_params=ANY,
         )
 
     def test_provider_failure_maps_through_the_error_handlers(

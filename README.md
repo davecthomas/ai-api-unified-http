@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.6.1
+# ai-api-unified-http 1.7.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -462,6 +462,47 @@ scales to zero cannot be relied on to sweep.
 
 Locally, `HTTP_ARTIFACT_DIR` is any writable directory and everything works the
 same way.
+
+### Attaching an image to a prompt
+
+`/v1/completions` takes `attachments`, on the streaming path as well as the
+buffered one.
+
+```bash
+curl -X POST "$BASE/v1/completions" -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{
+    "engine": "claude",
+    "prompt": "What is in this picture?",
+    "attachments": [{"mime_type": "image/png", "data": "iVBORw0KGgo..."}]
+  }'
+```
+
+An attachment carries bytes as base64, or names something already in the
+artifact store:
+
+```json
+{"attachments": [{"artifact_id": "Qd23KHcxeC5PD2Yh..."}]}
+```
+
+That second form is how an image this service generated gets asked about
+without being downloaded and uploaded again, and it is scoped to the caller who
+created it — another caller's id is a 404, exactly as fetching it directly
+would be.
+
+**Which types a model accepts is the library's decision, not this service's.**
+It validates the MIME type against what the provider path supports and refuses
+the rest; today that is images. Anything else comes back as a 400 quoting the
+library's reason. The service classifies the type and translates the refusal
+rather than keeping its own list, so support widening upstream widens this
+endpoint with no change here.
+
+Two size limits apply, and the smaller one is not the obvious one. The library
+caps decoded attachments at 20 MB, per item and in total. But base64 inflates
+by a third, so an attachment sent as `data` counts against
+`HTTP_MAX_REQUEST_BYTES` — 1 MiB by default — and a photograph will be refused
+with **413 before the library's cap is anywhere in sight**. Raise that setting
+for real images, or attach by `artifact_id`, which puts no weight in the body
+at all.
 
 ### Batches
 
