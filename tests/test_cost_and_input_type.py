@@ -29,6 +29,8 @@ USAGE = SimpleNamespace(
     input_tokens=1_000,
     output_tokens=500,
     cached_input_tokens=0,
+    cache_write_5m_tokens=0,
+    cache_write_1h_tokens=0,
     total_tokens=1_500,
 )
 
@@ -52,13 +54,22 @@ def _priced_client(
     """A client whose model carries token rates, priced like a real one."""
 
     def compute_token_cost(
-        *, input_tokens: int, output_tokens: int = 0, cached_input_tokens: int = 0
+        *,
+        input_tokens: int,
+        output_tokens: int = 0,
+        cached_input_tokens: int = 0,
+        cache_write_5m_tokens: int = 0,
+        cache_write_1h_tokens: int = 0,
     ) -> Decimal:
         per_million = Decimal(1_000_000)
         cost = Decimal(input_tokens) * Decimal(input_rate) / per_million
         cost += Decimal(output_tokens) * Decimal(output_rate) / per_million
         rate = Decimal(cached_rate) if cached_rate is not None else Decimal(input_rate)
         cost += Decimal(cached_input_tokens) * rate / per_million
+        # Cache writes cost more than ordinary input, not less. Priced here so
+        # the fake bills them the way the library does.
+        cost += Decimal(cache_write_5m_tokens) * Decimal("1.25") / per_million
+        cost += Decimal(cache_write_1h_tokens) * Decimal("2.00") / per_million
         return cost
 
     pricing = SimpleNamespace(
@@ -94,7 +105,10 @@ class TestCostComputation:
         free = SimpleNamespace(
             input_tokens=0, output_tokens=0, cached_input_tokens=0, total_tokens=0
         )
-        assert _usd_cost(_priced_client(), free) == "0"
+        # Compared as a value, not a string: Decimal keeps scale, so a cost of
+        # zero may render "0" or "0.00" depending on which rates contributed.
+        # The field means an amount, and a caller parses it as one.
+        assert Decimal(_usd_cost(_priced_client(), free)) == Decimal(0)
         assert (
             _usd_cost(MagicMock(capabilities=SimpleNamespace(pricing=None)), free)
             is None
@@ -297,3 +311,112 @@ class TestEmbeddingsInputType:
         fake.generate_embeddings_batch.assert_called_once_with(
             ["a"], input_type="document"
         )
+
+
+class TestCacheWritePricing:
+    """Writing to a cache costs more than ordinary input, not less.
+
+    The library gained these counts in 2.24.0. Omitting them does not round a
+    bill down slightly — a caller warming a large cache is understated by
+    orders of magnitude, which is worse than reporting nothing.
+    """
+
+    def test_cache_writes_are_priced_not_dropped(self) -> None:
+        usage = SimpleNamespace(
+            input_tokens=1_000,
+            output_tokens=0,
+            cached_input_tokens=0,
+            cache_write_5m_tokens=0,
+            cache_write_1h_tokens=100_000,
+            total_tokens=101_000,
+        )
+        priced = Decimal(_usd_cost(_priced_client(), usage))
+        # 1000 input at $3/1M, plus 100k 1h-writes at $2/1M.
+        assert priced == Decimal("0.003") + Decimal("0.2")
+
+    def test_a_caching_caller_is_not_understated(self) -> None:
+        # The regression this guards: same call, cache writes ignored.
+        without = SimpleNamespace(
+            input_tokens=1_000,
+            output_tokens=0,
+            cached_input_tokens=0,
+            cache_write_5m_tokens=0,
+            cache_write_1h_tokens=0,
+            total_tokens=1_000,
+        )
+        with_writes = SimpleNamespace(
+            input_tokens=1_000,
+            output_tokens=0,
+            cached_input_tokens=0,
+            cache_write_5m_tokens=0,
+            cache_write_1h_tokens=100_000,
+            total_tokens=101_000,
+        )
+        assert (
+            Decimal(_usd_cost(_priced_client(), with_writes))
+            > Decimal(_usd_cost(_priced_client(), without)) * 60
+        )
+
+    def test_the_five_minute_and_one_hour_rates_differ(self) -> None:
+        # Two tiers, priced differently. Collapsing them would misreport one.
+        def usage(**counts):
+            base = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_write_5m_tokens": 0,
+                "cache_write_1h_tokens": 0,
+                "total_tokens": 0,
+            }
+            base.update(counts)
+            return SimpleNamespace(**base)
+
+        short = Decimal(
+            _usd_cost(_priced_client(), usage(cache_write_5m_tokens=10_000))
+        )
+        long = Decimal(_usd_cost(_priced_client(), usage(cache_write_1h_tokens=10_000)))
+        assert long > short > 0
+
+    def test_a_provider_reporting_no_cache_counts_still_prices(self) -> None:
+        # Not every provider reports these, and an older usage object has no
+        # such attributes at all.
+        usage = SimpleNamespace(
+            input_tokens=1_000,
+            output_tokens=500,
+            cached_input_tokens=0,
+            total_tokens=1_500,
+        )
+        assert Decimal(_usd_cost(_priced_client(), usage)) > 0
+
+    def test_the_counts_reach_the_caller(self, client: TestClient) -> None:
+        # A caller reconciling a bill needs the counts, not only the total.
+        turn = SimpleNamespace(
+            text="hello",
+            tool_calls=[],
+            finish_reason=SimpleNamespace(value="complete"),
+            usage=SimpleNamespace(
+                input_tokens=1_000,
+                output_tokens=500,
+                cached_input_tokens=200,
+                cache_write_5m_tokens=300,
+                cache_write_1h_tokens=400,
+                total_tokens=2_400,
+            ),
+            raw_content=None,
+        )
+        fake = _priced_client()
+        fake.asend_conversation = AsyncMock(return_value=turn)
+        with patch(
+            "ai_api_unified_http.routes_v1.get_completions_client", return_value=fake
+        ):
+            usage = client.post(
+                "/v1/conversations/turn",
+                json={
+                    "engine": "claude",
+                    "system_prompt": "be brief",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            ).json()["usage"]
+        assert usage["cache_write_5m_tokens"] == 300
+        assert usage["cache_write_1h_tokens"] == 400
+        assert usage["cached_input_tokens"] == 200

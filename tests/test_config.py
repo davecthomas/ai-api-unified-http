@@ -17,6 +17,9 @@ from ai_api_unified_http import config
 
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # This module exercises the default relative path, so it opts out of the
+    # suite-wide override that keeps every other test off the developer's .env.
+    monkeypatch.delenv(config.ENV_FILE_ENV, raising=False)
     monkeypatch.delenv("A_TEST_PROVIDER_KEY", raising=False)
     monkeypatch.delenv("ANOTHER_TEST_VALUE", raising=False)
     monkeypatch.chdir(tmp_path)

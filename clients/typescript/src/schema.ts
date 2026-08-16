@@ -1281,6 +1281,10 @@ export interface components {
          *     use to compute or display cost.
          */
         TokenRates: {
+            /** Cache Write 1H Per 1M */
+            cache_write_1h_per_1m?: string | null;
+            /** Cache Write 5M Per 1M */
+            cache_write_5m_per_1m?: string | null;
             /** Cached Input Per 1M */
             cached_input_per_1m?: string | null;
             /** Input Per 1M */
@@ -1297,7 +1301,20 @@ export interface components {
          *     zeros that would read as measured values.
          */
         TokenUsage: {
-            /** Cached Input Tokens */
+            /**
+             * Cache Write 1H Tokens
+             * @description Tokens written to a one-hour cache, billed further above it.
+             */
+            cache_write_1h_tokens?: number | null;
+            /**
+             * Cache Write 5M Tokens
+             * @description Tokens written to a five-minute cache, billed above the input rate.
+             */
+            cache_write_5m_tokens?: number | null;
+            /**
+             * Cached Input Tokens
+             * @description Input tokens served from cache, billed at the cached rate.
+             */
             cached_input_tokens?: number | null;
             /** Input Tokens */
             input_tokens?: number | null;

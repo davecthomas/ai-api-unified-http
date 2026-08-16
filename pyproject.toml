@@ -1,7 +1,7 @@
 [project]
 name = "ai_api_unified_http"
 
-version = "1.8.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
+version = "1.9.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
 description = "HTTP service exposing ai-api-unified to non-Python apps"
 authors = [{ name = "Dave Thomas", email = "davidcthomas@gmail.com" }]
 license = "MIT"
@@ -14,7 +14,7 @@ dependencies = [
     # construction with "requires optional extra". middleware-pii-redaction is
     # required by hard requirement 2, which puts every call through the
     # library's redaction and observability middleware.
-    "ai-api-unified[anthropic,google-gemini,middleware-pii-redaction,openai] (==2.22.0)",
+    "ai-api-unified[anthropic,google-gemini,middleware-pii-redaction,openai] (==2.24.0)",
     "fastapi (>=0.115,<1.0)",
     # Read directly by config.py. It arrives transitively today, but a direct
     # import belongs in the direct dependencies.
