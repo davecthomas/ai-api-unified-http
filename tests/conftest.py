@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ai_api_unified_http import auth, cost
+from ai_api_unified_http import auth, config, cost
 from ai_api_unified_http.app import create_app
 
 TEST_API_KEY: str = "test-suite-key"
@@ -35,6 +35,16 @@ def service_env(
     The cost topic is keyed on the test name because logging holds loggers in a
     process-wide registry, so a shared name would leak handlers between tests.
     """
+    # Two separate things read .env, and both have to be kept away from the
+    # developer's copy. The service's own loader honours HTTP_ENV_FILE, so it
+    # is pointed at a path that does not exist. The library's EnvSettings reads
+    # `.env` from the working directory directly, honouring nothing, so the
+    # working directory moves to tmp_path. Without both, a test asserting an
+    # unconfigured engine passes or fails depending on the developer's file —
+    # which happened, and cost a wrong conclusion about a library upgrade.
+    monkeypatch.setenv(config.ENV_FILE_ENV, str(tmp_path / "absent.env"))
+    monkeypatch.chdir(tmp_path)
+
     monkeypatch.setenv(auth.API_KEYS_ENV, f"tests:{TEST_API_KEY}")
     monkeypatch.delenv(auth.AUTH_DISABLED_ENV, raising=False)
 

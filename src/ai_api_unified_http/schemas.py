@@ -172,7 +172,18 @@ class TokenUsage(BaseModel):
 
     input_tokens: int | None = None
     output_tokens: int | None = None
-    cached_input_tokens: int | None = None
+    cached_input_tokens: int | None = Field(
+        default=None,
+        description="Input tokens served from cache, billed at the cached rate.",
+    )
+    cache_write_5m_tokens: int | None = Field(
+        default=None,
+        description="Tokens written to a five-minute cache, billed above the input rate.",
+    )
+    cache_write_1h_tokens: int | None = Field(
+        default=None,
+        description="Tokens written to a one-hour cache, billed further above it.",
+    )
     total_tokens: int | None = None
 
 
@@ -333,6 +344,8 @@ class TokenRates(BaseModel):
     input_per_1m: str
     output_per_1m: str | None = None
     cached_input_per_1m: str | None = None
+    cache_write_5m_per_1m: str | None = None
+    cache_write_1h_per_1m: str | None = None
 
 
 class ModelPricing(BaseModel):

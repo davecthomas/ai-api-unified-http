@@ -273,12 +273,20 @@ def _prompt_params(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+def _rate_str(rates: Any, field: str) -> str | None:
+    """Read one rate as a decimal string, or None when the model has no such rate."""
+    value: Any = getattr(rates, field, None)
+    return str(value) if value is not None else None
+
+
 def _usage(usage: Any) -> TokenUsage:
     """Convert the library's token usage into the response model."""
     return TokenUsage(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cached_input_tokens=usage.cached_input_tokens,
+        cache_write_5m_tokens=getattr(usage, "cache_write_5m_tokens", None),
+        cache_write_1h_tokens=getattr(usage, "cache_write_1h_tokens", None),
         total_tokens=usage.total_tokens,
     )
 
@@ -314,11 +322,19 @@ def _usd_cost(client: Any, usage: Any) -> str | None:
 
     cached: int = usage.cached_input_tokens or 0
     non_cached: int = max((usage.input_tokens or 0) - cached, 0)
+    # Writing to a cache costs more than ordinary input, not less: a five-minute
+    # cache bills above the input rate and a one-hour cache further above it.
+    # Omitting these understates a caching caller's bill by orders of magnitude,
+    # so they are priced rather than dropped.
+    write_5m: int = getattr(usage, "cache_write_5m_tokens", None) or 0
+    write_1h: int = getattr(usage, "cache_write_1h_tokens", None) or 0
     try:
         cost: Decimal = pricing.compute_token_cost(
             input_tokens=non_cached,
             output_tokens=usage.output_tokens or 0,
             cached_input_tokens=cached,
+            cache_write_5m_tokens=write_5m,
+            cache_write_1h_tokens=write_1h,
         )
     except (ArithmeticError, TypeError, ValueError):
         logger.warning("could not price a completed call; reporting no cost")
@@ -512,6 +528,8 @@ def _model_pricing(pricing: Any) -> ModelPricing | None:
                     if rates.cached_input_per_1m is not None
                     else None
                 ),
+                cache_write_5m_per_1m=_rate_str(rates, "cache_write_5m_per_1m"),
+                cache_write_1h_per_1m=_rate_str(rates, "cache_write_1h_per_1m"),
             )
             if rates is not None
             else None
@@ -1523,6 +1541,11 @@ async def speech(http_request: Request, request: SpeechRequest) -> SpeechRespons
     except Exception:  # noqa: BLE001 - a missing duration must not fail the call
         # The clip exists and has been paid for; reporting its length is a
         # convenience, not the result.
+        duration = None
+    if duration is not None and duration <= 0:
+        # The engine could not measure this format and answered zero. A clip
+        # with bytes has a length; zero here means unknown, and null says that
+        # where 0.0 would read as a measurement.
         duration = None
 
     return SpeechResponse(

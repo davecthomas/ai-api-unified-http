@@ -342,12 +342,22 @@ class TestUnconfiguredEngine:
     def test_no_engine_configured_is_503(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # AI_VOICE_ENGINE has no default, and the library says so. It reaches
-        # the caller as a 503 naming the setting, not as a 500.
+        # AI_VOICE_ENGINE has no default, in 2.24 as in 2.22, and the library
+        # says so. It reaches the caller as a 503 naming the setting, not a
+        # 500. This test once appeared to show 2.24 defaulting the engine;
+        # what it actually showed was the library reading the developer's .env
+        # from the working directory, which the conftest now prevents.
         monkeypatch.delenv("AI_VOICE_ENGINE", raising=False)
         response = client.get("/v1/voices", headers=_auth())
         assert response.status_code == 503
         assert "AI_VOICE_ENGINE" in response.json()["detail"]
+
+    def test_an_unloadable_engine_is_503_not_500(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AI_VOICE_ENGINE", "not-a-real-engine")
+        response = client.get("/v1/voices", headers=_auth())
+        assert response.status_code == 503
 
 
 class TestSurface:

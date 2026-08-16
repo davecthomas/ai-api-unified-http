@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.8.0
+# ai-api-unified-http 1.9.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -358,7 +358,17 @@ It is a string, for the reason the pricing rates are strings: these are
 decimal money values that binary floating point cannot hold exactly. A model
 with no rates in the registry reports `null`, never `0` — the library's own
 cost helper returns 0.0 for an unpriced model, and a caller cannot tell that
-apart from a call that was genuinely free.
+apart from a call that was genuinely free. Compare it as a number rather than
+a string: the scale follows whichever rates contributed, so a zero cost may
+render `0` or `0.00`.
+
+**Prompt caching is priced, and it is not a discount on every line.** Reading
+from a cache is cheaper than ordinary input; *writing* to one is dearer, and a
+one-hour cache costs more to fill than a five-minute one. `usage` reports
+`cached_input_tokens`, `cache_write_5m_tokens`, and `cache_write_1h_tokens`
+separately, `usd_cost` prices all three, and `/v1/models` publishes the rates.
+A caller warming a large cache would otherwise see a figure understated by
+orders of magnitude rather than slightly.
 
 `/v1/completions` reports no cost, because the library's buffered completion
 call returns bare text with no usage to price.
@@ -539,14 +549,13 @@ no support for them. Sending them anyway would be synthesized, billed, and the
 instruction silently dropped.
 
 `AI_VOICE_ENGINE` selects the engine and has no default; without it both
-endpoints answer 503 naming the setting.
+endpoints answer 503 naming the setting. The library also reads `.env` directly
+from its working directory, so in local development that file can supply it.
 
-**Synthesis is unverified against a live provider.** The catalogue is proven
-against a real engine; the OpenAI synthesis path raises inside
-ai-api-unified 2.22.0 — `AIVoiceOpenAI.text_to_voice` reads `self.user`, which
-`AIVoiceBase` does not define — and the Google path needs the Cloud
-Text-to-Speech API enabled on the project the credentials belong to. Both are
-outside this service.
+Synthesis works on the OpenAI path from library 2.24.0, which fixed the
+`AIVoiceOpenAI` defect that made it raise for every caller. The Google path
+still needs the Cloud Text-to-Speech API reachable by the configured
+credential, which a service-account-bound API key cannot do.
 
 ### Batches
 
