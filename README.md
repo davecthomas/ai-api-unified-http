@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.9.0
+# ai-api-unified-http 1.9.1
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -551,6 +551,8 @@ instruction silently dropped.
 `AI_VOICE_ENGINE` selects the engine and has no default; without it both
 endpoints answer 503 naming the setting. The library also reads `.env` directly
 from its working directory, so in local development that file can supply it.
+`make gcp-deploy` sets `openai`, so a deployment serves voice out of the box;
+synthesis needs `OPENAI_API_KEY`, which the deploy already mounts.
 
 Synthesis works on the OpenAI path from library 2.24.0, which fixed the
 `AIVoiceOpenAI` defect that made it raise for every caller. The Google path
