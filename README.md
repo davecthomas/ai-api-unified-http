@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.9.1
+# ai-api-unified-http 1.9.2
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -607,6 +607,11 @@ sunset date, replacement, pricing. A model can appear in one and not the other,
 and a provider model with no catalog entry is uncatalogued, which is not the
 same as free.
 
+On Gemini, `models` is checked against the provider's live catalogue from
+library 2.26.1, and the answer is cached for 15 minutes on the pooled client.
+Before that it was a static list naming the four Gemini 2.0 models, which
+Google has retired: they were advertised here while a call to one answered 404.
+
 Pricing rates are strings. They are decimal money values, and binary floating
 point cannot hold them exactly: `0.075` arriving as `0.07499999999999999` would
 be wrong in a field used to compute cost.
@@ -629,6 +634,10 @@ Ordering is yours, because only you know where a new user message belongs
 relative to the previous assistant turn. Echo the token without parsing it: it
 carries provider-specific content whose shape changes with the engine and the
 library version. A token from an older service version is rejected with a 400.
+
+That shape reaches every engine from library 2.26.1. Gemini rejected a string
+`content` in its own client before, so this endpoint and `/v1/structured`
+answered 500 for a Gemini caller sending history; both now return a turn.
 
 ## Versioning
 
