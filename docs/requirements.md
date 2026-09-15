@@ -18,7 +18,7 @@ record: 2026-08-04.
 ## Hard requirements
 
 1. **The library does not change to support this service.** The service pins a
-   published PyPI release (`ai-api-unified==2.22.0`) and consumes only its
+   published PyPI release (`ai-api-unified==2.26.1`) and consumes only its
    public API. Library improvements that would simplify the service
    (async streaming, a pluggable cost sink) are tracked as future library work,
    not prerequisites.
