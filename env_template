@@ -65,16 +65,17 @@ GOOGLE_AUTH_METHOD=api_key
 # AI_MIDDLEWARE_CONFIG_PATH=config/middleware.yaml
 
 # --- Engine defaults (per-request values override these) ---
-# Completions engine (openai | openai-responses | claude | google-gemini)
+# Completions engine (openai | openai-responses | claude | google-gemini | openai-compatible)
 COMPLETIONS_ENGINE=claude
 # Embedding engine (openai | google-gemini | voyage)
 EMBEDDING_ENGINE=google-gemini
 
 # Completions model name, by engine. Leave unset to use the engine default
 # (one generation behind the newest catalogued model):
-#   openai:        default gpt-5.4-mini    | gpt-5.5 | gpt-5.4 | gpt-5.4-nano | gpt-4o-mini
-#   claude:        default claude-opus-4-8 | claude-opus-5 | claude-sonnet-5 | claude-fable-5 | claude-haiku-4-5
-#   google-gemini: default gemini-3.5-flash | gemini-3.6-flash | gemini-3.5-flash-lite | gemini-3.1-pro-preview | gemini-2.5-flash
+#   openai:        default gpt-5.6-luna    | gpt-6-astra | gpt-6-sol | gpt-6-luna | gpt-5.6-sol | gpt-5.6-terra | gpt-5.5
+#   claude:        default claude-opus-5   | claude-opus-5-5 | claude-fable-5-1 | claude-sonnet-5 | claude-opus-4-8 | claude-haiku-4-5
+#   google-gemini: default gemini-3.7-flash | gemini-3.8-flash | gemini-3.6-flash | gemini-3.5-flash-lite | gemini-3.1-pro-preview
+#   openai-compatible: no default; callers name the model per request
 # Comment this out entirely to take the engine's default model. An empty
 # assignment is NOT the same as unset: the library forwards the empty string
 # and the provider rejects it ("model: String should have at least 1
@@ -83,6 +84,16 @@ EMBEDDING_ENGINE=google-gemini
 # COMPLETIONS_MODEL_NAME=
 EMBEDDING_MODEL_NAME=gemini-embedding-001
 
+# Any server speaking the OpenAI Chat Completions protocol (vLLM, Ollama,
+# LiteLLM, a hosted vendor's compatible endpoint), reached with
+# engine "openai-compatible". One server per deployment: the URL is read from
+# the environment, not the request.
+# OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
+# OPENAI_COMPATIBLE_API_KEY=
+# json_schema (default) or json_object, for servers without schema enforcement
+# OPENAI_COMPATIBLE_STRUCTURED_OUTPUT=json_schema
+# Context window of the served model, for the library's context guard
+# OPENAI_COMPATIBLE_CONTEXT_WINDOW=
 
 # Escalate deprecated-model use to a hard error (recommended in CI).
 # AI_STRICT_DEPRECATIONS=1

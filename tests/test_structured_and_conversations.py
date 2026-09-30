@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from ai_api_unified import (
     AIFinishReason,
+    AIPromptCacheHint,
+    AIPromptCacheRetention,
     AIStructuredOutputResult,
     AITokenUsage,
     AIToolCall,
@@ -160,6 +162,23 @@ class TestStructured:
         )
         _, kwargs = fake_client.asend_structured_output.call_args
         assert kwargs["max_response_tokens"] == 512
+
+    def test_a_cache_request_is_forwarded(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        client.post(
+            STRUCTURED,
+            json={
+                "engine": "claude",
+                "prompt": "x",
+                "response_schema": {},
+                "prompt_cache": {"retention": "extended"},
+            },
+        )
+        _, kwargs = fake_client.asend_structured_output.call_args
+        assert kwargs["prompt_cache"] == AIPromptCacheHint(
+            retention=AIPromptCacheRetention.EXTENDED
+        )
 
 
 class TestConversationTurn:
@@ -329,6 +348,68 @@ class TestConversationTurn:
                 TURN, json={"engine": "claude", "system_prompt": "s", "messages": []}
             )
         assert response.json()["conversation_token"] is None
+
+    def test_a_cache_request_is_forwarded(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        client.post(
+            TURN,
+            json={
+                "engine": "claude",
+                "system_prompt": "s",
+                "messages": [],
+                "prompt_cache": {"retention": "default"},
+            },
+        )
+        _, kwargs = fake_client.asend_conversation.call_args
+        assert kwargs["prompt_cache"] == AIPromptCacheHint()
+
+    def test_no_cache_request_sends_none(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        client.post(
+            TURN, json={"engine": "claude", "system_prompt": "s", "messages": []}
+        )
+        _, kwargs = fake_client.asend_conversation.call_args
+        assert kwargs["prompt_cache"] is None
+
+    def test_a_refused_forced_tool_choice_is_400(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        # Claude Opus 5.5 and Fable 5.1 refuse any forced choice. The library
+        # says so with a bare ValueError before the network call, which would
+        # otherwise leave as a 500 the caller cannot act on.
+        fake_client.asend_conversation.side_effect = ValueError(
+            "claude-opus-5-5 does not accept a forced tool_choice. Pass "
+            "tool_choice=None and name the tool in the prompt instead."
+        )
+        response = client.post(
+            TURN,
+            json={
+                "engine": "claude",
+                "model": "claude-opus-5-5",
+                "system_prompt": "s",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": "lookup",
+            },
+        )
+        assert response.status_code == 400
+        assert "forced tool_choice" in response.json()["detail"]
+
+    def test_an_unrelated_value_error_is_still_a_500(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        fake_client.asend_conversation.side_effect = ValueError("Empty response")
+        response = client.post(
+            TURN,
+            json={
+                "engine": "claude",
+                "system_prompt": "s",
+                "messages": [],
+                "tool_choice": "lookup",
+            },
+        )
+        assert response.status_code == 500
 
 
 class TestConversationToken:

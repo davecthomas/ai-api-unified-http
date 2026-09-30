@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.9.2
+# ai-api-unified-http 1.10.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -373,6 +373,35 @@ orders of magnitude rather than slightly.
 `/v1/completions` reports no cost, because the library's buffered completion
 call returns bare text with no usage to price.
 
+### Prompt caching
+
+`/v1/completions` (buffered and streamed), `/v1/structured`,
+`/v1/conversations/turn`, and each item of `/v1/batches` accept
+`prompt_cache`. It marks the system prompt and tool definitions as a prefix
+the provider may reuse on the next call:
+
+```json
+{"engine": "claude", "system_prompt": "<long, unchanging instructions>",
+ "prompt": "...", "prompt_cache": {"retention": "default"}}
+```
+
+Each engine maps it to its own control. `claude` sets a cache breakpoint on
+the system prompt, and on conversation turns also caches the growing history.
+`openai` and `openai-responses` send `key` as the prompt cache key.
+`google-gemini` caches repeated prefixes by itself and ignores the hint, as
+does `openai-compatible`. An engine that cannot honor it ignores it rather
+than refusing, because caching changes cost and latency, never the answer.
+
+`retention: "extended"` asks for the longer window where the model offers
+one: an hour on Anthropic, 24 hours on OpenAI. On Anthropic an extended write
+bills at twice the input rate, against 1.25 times for the default, so it pays
+off only when calls sharing the prefix arrive more than about five minutes
+apart.
+
+A hit needs the prefix to match byte for byte. A timestamp or request id in
+the system prompt defeats it. Whether a call hit shows in
+`usage.cached_input_tokens`, and `usd_cost` prices the reads and writes.
+
 ### Embedding queries and documents
 
 `/v1/embeddings` takes an optional `input_type`, forwarded to the provider
@@ -584,7 +613,8 @@ Results correlate by `custom_id`, not by position: providers return them in
 their own order. An item can fail while the batch ends normally, so read each
 item's `status` before its `text`.
 
-Results carry `usage` and no `usd_cost`. The registry's token rates are
+Results carry `usage` and no `usd_cost`. `usage` includes cache reads and
+writes when the provider reports them, which a cached Anthropic batch does. The registry's token rates are
 interactive rates, and batch bills at the provider's batch rate, so a figure
 computed here would overstate the real cost.
 
@@ -634,6 +664,10 @@ Ordering is yours, because only you know where a new user message belongs
 relative to the previous assistant turn. Echo the token without parsing it: it
 carries provider-specific content whose shape changes with the engine and the
 library version. A token from an older service version is rejected with a 400.
+
+`tool_choice` forces the model to call the named tool. Claude Opus 5.5 and
+Fable 5.1 refuse any forced choice, so a turn setting one on those models is
+answered with 400 before it reaches the provider. Leave it unset and name the tool in the prompt instead.
 
 That shape reaches every engine from library 2.26.1. Gemini rejected a string
 `content` in its own client before, so this endpoint and `/v1/structured`

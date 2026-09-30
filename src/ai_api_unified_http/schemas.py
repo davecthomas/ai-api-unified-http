@@ -8,7 +8,7 @@ from them, and the TypeScript client from that. Field names mirror the
 ai-api-unified call signatures they map onto (see docs/technical-design.md).
 """
 
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field
 
@@ -99,6 +99,52 @@ class Attachment(BaseModel):
     )
 
 
+class PromptCache(BaseModel):
+    """A request to cache the stable start of a prompt.
+
+    Marks the system prompt and any tool definitions as a prefix the provider
+    may reuse on the next call. Caching changes cost and latency, never the
+    answer, so an engine that has no such control ignores the request rather
+    than refusing it:
+
+    - `claude` sets a cache breakpoint on the system prompt. On conversation
+      turns it also caches the growing history.
+    - `openai` and `openai-responses` send `key` as the prompt cache key.
+    - `google-gemini` caches repeated prefixes on its own and needs no hint.
+
+    A hit needs the prefix to be byte-identical, so keep timestamps, request
+    ids, and other per-call values out of the system prompt. Whether a call
+    hit the cache shows in `usage.cached_input_tokens`, and the cost of
+    writing it in the `cache_write_*` counts.
+    """
+
+    retention: Literal["default", "extended"] = Field(
+        default="default",
+        description=(
+            "'default' is the provider's standard window (about five minutes "
+            "on Anthropic). 'extended' asks for the longer one where the model "
+            "offers it: one hour on Anthropic, 24 hours on OpenAI. Anthropic "
+            "bills an extended write at twice the input rate against 1.25x "
+            "for default, so it pays off only when calls sharing the prefix "
+            "arrive more than about five minutes apart."
+        ),
+    )
+    key: str | None = Field(
+        default=None,
+        max_length=256,
+        description=(
+            "Routing key grouping calls that share a prefix. Used by OpenAI; "
+            "other engines ignore it."
+        ),
+    )
+
+
+PROMPT_CACHE_DESCRIPTION: Final[str] = (
+    "Ask the provider to cache the system prompt and tool definitions for "
+    "reuse. Engines without a cache control ignore it."
+)
+
+
 class CompletionRequest(EngineSelection):
     prompt: str = Field(max_length=MAX_PROMPT_CHARS)
     attachments: list[Attachment] | None = Field(
@@ -116,6 +162,9 @@ class CompletionRequest(EngineSelection):
     system_prompt: str | None = Field(default=None, max_length=MAX_SYSTEM_PROMPT_CHARS)
     max_response_tokens: int | None = None
     request_timeout_seconds: float | None = None
+    prompt_cache: PromptCache | None = Field(
+        default=None, description=PROMPT_CACHE_DESCRIPTION
+    )
     stream: bool = Field(
         default=False,
         description="When true the response is text/event-stream (SSE). "
@@ -150,6 +199,9 @@ class StructuredRequest(EngineSelection):
     )
     max_response_tokens: int | None = None
     request_timeout_seconds: float | None = None
+    prompt_cache: PromptCache | None = Field(
+        default=None, description=PROMPT_CACHE_DESCRIPTION
+    )
 
 
 USD_COST_DESCRIPTION: Final[str] = (
@@ -276,9 +328,19 @@ class ConversationTurnRequest(EngineSelection):
         ),
     )
     tools: list[ToolSchema] | None = None
-    tool_choice: str | None = None
+    tool_choice: str | None = Field(
+        default=None,
+        description=(
+            "Name of a tool the model must call. Claude Opus 5.5 and Fable 5.1 "
+            "refuse any forced choice, and a request setting one on those "
+            "models is answered with 400 before it reaches the provider."
+        ),
+    )
     max_response_tokens: int | None = None
     request_timeout_seconds: float | None = None
+    prompt_cache: PromptCache | None = Field(
+        default=None, description=PROMPT_CACHE_DESCRIPTION
+    )
 
 
 class EmbeddingsRequest(BaseModel):
@@ -412,6 +474,9 @@ class BatchRequestItem(BaseModel):
     prompt: str = Field(max_length=MAX_PROMPT_CHARS)
     system_prompt: str | None = Field(default=None, max_length=MAX_SYSTEM_PROMPT_CHARS)
     max_response_tokens: int | None = None
+    prompt_cache: PromptCache | None = Field(
+        default=None, description=PROMPT_CACHE_DESCRIPTION
+    )
 
 
 class BatchSubmitRequest(EngineSelection):

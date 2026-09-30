@@ -25,6 +25,8 @@ from ai_api_unified import (
     AIBatchRequestItem,
     AICompletionsPromptParamsBase,
     AIFactory,
+    AIPromptCacheHint,
+    AIPromptCacheRetention,
     AiProviderCapabilityUnsupportedError,
     AITool,
     SupportedDataType,
@@ -86,6 +88,7 @@ from .schemas import (
     ModelPricing,
     ModelsResponse,
     NotImplementedResponse,
+    PromptCache,
     SpeechRequest,
     SpeechResponse,
     StructuredRequest,
@@ -131,6 +134,10 @@ _IMAGE_MIME_TYPES: dict[str, str] = {
     "jpg": "image/jpeg",
     "webp": "image/webp",
 }
+
+# Phrase the library uses when a model refuses a forced tool choice. It raises
+# a bare ValueError for this, so the phrase is what tells it apart.
+_FORCED_TOOL_CHOICE: str = "does not accept a forced tool_choice"
 
 # send_prompt_streaming takes only the prompt and other_params. These fields
 # have nowhere to go on the streaming path, so a request that sets them is
@@ -225,6 +232,16 @@ def _attachment_bytes(caller: str, attachment: Attachment) -> tuple[bytes, str]:
         ) from error
 
 
+def _cache_hint(prompt_cache: PromptCache | None) -> AIPromptCacheHint | None:
+    """Translate the caller's cache request into the library's hint."""
+    if prompt_cache is None:
+        return None
+    return AIPromptCacheHint(
+        retention=AIPromptCacheRetention(prompt_cache.retention),
+        key=prompt_cache.key,
+    )
+
+
 def _prompt_params(
     caller: str, request: CompletionRequest
 ) -> AICompletionsPromptParamsBase | None:
@@ -247,7 +264,7 @@ def _prompt_params(
         HTTPException: 400 when the library refuses the attachments.
     """
     attachments: list[Attachment] = request.attachments or []
-    if not attachments and not request.system_prompt:
+    if not attachments and not request.system_prompt and not request.prompt_cache:
         return None
 
     types: list[Any] = []
@@ -265,6 +282,7 @@ def _prompt_params(
             included_types=types or None,
             included_data=blobs or None,
             included_mime_types=mimes or None,
+            prompt_cache=_cache_hint(request.prompt_cache),
         )
     except ValueError as error:
         # The library's validator refuses a type this call cannot take, empty
@@ -673,6 +691,7 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
         messages=request.messages,
         **_optional(max_response_tokens=request.max_response_tokens),
         request_timeout_seconds=request.request_timeout_seconds,
+        prompt_cache=_cache_hint(request.prompt_cache),
     )
     return StructuredResponse(
         data=result.data,
@@ -715,14 +734,24 @@ async def conversation_turn(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     client = get_completions_client(request.engine, request.model)
-    turn = await client.asend_conversation(
-        request.system_prompt,
-        messages,
-        tools=_tools(request.tools),
-        tool_choice=request.tool_choice,
-        max_response_tokens=request.max_response_tokens,
-        request_timeout_seconds=request.request_timeout_seconds,
-    )
+    try:
+        turn = await client.asend_conversation(
+            request.system_prompt,
+            messages,
+            tools=_tools(request.tools),
+            tool_choice=request.tool_choice,
+            max_response_tokens=request.max_response_tokens,
+            request_timeout_seconds=request.request_timeout_seconds,
+            prompt_cache=_cache_hint(request.prompt_cache),
+        )
+    except ValueError as error:
+        # Some models refuse any forced tool choice, and the library says so
+        # with a plain ValueError before the network call. That is the
+        # caller's to fix, not a 500. The match is on the library's wording
+        # so an unrelated ValueError still surfaces as the failure it is.
+        if request.tool_choice is None or _FORCED_TOOL_CHOICE not in str(error):
+            raise
+        raise HTTPException(status_code=400, detail=str(error)) from error
     return ConversationTurnResponse(
         text=turn.text,
         tool_calls=[
@@ -922,6 +951,7 @@ async def submit_batch(request: BatchSubmitRequest) -> BatchJobResponse:
             prompt=item.prompt,
             system_prompt=item.system_prompt,
             max_response_tokens=item.max_response_tokens,
+            prompt_cache=_cache_hint(item.prompt_cache),
         )
         for item in request.requests
     ]
@@ -995,6 +1025,15 @@ async def get_batch_results(
                 usage=TokenUsage(
                     input_tokens=item.provider_prompt_tokens,
                     output_tokens=item.provider_completion_tokens,
+                    cached_input_tokens=getattr(
+                        item, "provider_cached_input_tokens", None
+                    ),
+                    cache_write_5m_tokens=getattr(
+                        item, "provider_cache_write_5m_tokens", None
+                    ),
+                    cache_write_1h_tokens=getattr(
+                        item, "provider_cache_write_1h_tokens", None
+                    ),
                 ),
             )
             for item in items

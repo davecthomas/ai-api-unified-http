@@ -689,6 +689,8 @@ export interface components {
             max_response_tokens?: number | null;
             /** Prompt */
             prompt: string;
+            /** @description Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it. */
+            prompt_cache?: components["schemas"]["PromptCache"] | null;
             /** System Prompt */
             system_prompt?: string | null;
         };
@@ -774,6 +776,8 @@ export interface components {
             model?: string | null;
             /** Prompt */
             prompt: string;
+            /** @description Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it. */
+            prompt_cache?: components["schemas"]["PromptCache"] | null;
             /** Request Timeout Seconds */
             request_timeout_seconds?: number | null;
             /**
@@ -832,11 +836,16 @@ export interface components {
              * @description Model name; omit to use the engine's default model.
              */
             model?: string | null;
+            /** @description Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it. */
+            prompt_cache?: components["schemas"]["PromptCache"] | null;
             /** Request Timeout Seconds */
             request_timeout_seconds?: number | null;
             /** System Prompt */
             system_prompt: string;
-            /** Tool Choice */
+            /**
+             * Tool Choice
+             * @description Name of a tool the model must call. Claude Opus 5.5 and Fable 5.1 refuse any forced choice, and a request setting one on those models is answered with 400 before it reaches the provider.
+             */
             tool_choice?: string | null;
             /** Tools */
             tools?: components["schemas"]["ToolSchema"][] | null;
@@ -1120,6 +1129,39 @@ export interface components {
             models: string[];
         };
         /**
+         * PromptCache
+         * @description A request to cache the stable start of a prompt.
+         *
+         *     Marks the system prompt and any tool definitions as a prefix the provider
+         *     may reuse on the next call. Caching changes cost and latency, never the
+         *     answer, so an engine that has no such control ignores the request rather
+         *     than refusing it:
+         *
+         *     - `claude` sets a cache breakpoint on the system prompt. On conversation
+         *       turns it also caches the growing history.
+         *     - `openai` and `openai-responses` send `key` as the prompt cache key.
+         *     - `google-gemini` caches repeated prefixes on its own and needs no hint.
+         *
+         *     A hit needs the prefix to be byte-identical, so keep timestamps, request
+         *     ids, and other per-call values out of the system prompt. Whether a call
+         *     hit the cache shows in `usage.cached_input_tokens`, and the cost of
+         *     writing it in the `cache_write_*` counts.
+         */
+        PromptCache: {
+            /**
+             * Key
+             * @description Routing key grouping calls that share a prefix. Used by OpenAI; other engines ignore it.
+             */
+            key?: string | null;
+            /**
+             * Retention
+             * @description 'default' is the provider's standard window (about five minutes on Anthropic). 'extended' asks for the longer one where the model offers it: one hour on Anthropic, 24 hours on OpenAI. Anthropic bills an extended write at twice the input rate against 1.25x for default, so it pays off only when calls sharing the prefix arrive more than about five minutes apart.
+             * @default default
+             * @enum {string}
+             */
+            retention: "default" | "extended";
+        };
+        /**
          * SpeechRequest
          * @description Text to synthesize, and how it should sound.
          *
@@ -1195,6 +1237,8 @@ export interface components {
             model?: string | null;
             /** Prompt */
             prompt?: string | null;
+            /** @description Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it. */
+            prompt_cache?: components["schemas"]["PromptCache"] | null;
             /** Request Timeout Seconds */
             request_timeout_seconds?: number | null;
             /**
