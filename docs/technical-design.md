@@ -30,9 +30,9 @@ enforcement, and middleware stay in the library.
 | Endpoint | Library call | Notes |
 |---|---|---|
 | `POST /v1/completions` | `asend_prompt(...)` | True coroutine; handler awaits it. Attachments travel in `other_params`, which both this and the streaming call accept. The library owns which MIME types are acceptable and validates list alignment and size caps; the service classifies the type and translates the refusal into a 400 rather than keeping its own allowlist. `prompt_cache` travels in `other_params` too, so it reaches the streaming call as well; a request carrying only a cache hint still builds the parameters object. |
-| `POST /v1/completions` + `stream: true` | `send_prompt_streaming(...)` | Sync generator bridged to SSE via `StreamingResponse` in the threadpool. No PII redaction (library rule). No retries on streams (library rule). |
+| `POST /v1/completions` + `stream: true` | `send_prompt_streaming(...)` | Sync generator bridged to SSE via `StreamingResponse` in the threadpool. No PII redaction (library rule). No retries on streams (library rule). A fallback chain fails a stream over before its first chunk only; the `done` event names the model that served (see "Model fallback"). |
 | `POST /v1/structured` | `asend_structured_output(...)` | `data` is null on `length`/`refusal` finish reasons; surface `finish_reason` to the caller. `prompt_cache` maps to the library's `AIPromptCacheHint` keyword (2.30.0). |
-| `POST /v1/conversations/turn` | `asend_conversation(...)` | Stateless; caller sends full history each turn and executes tools itself (ADR-0018 in the library repo). Library 2.26.1 made the documented `{role, content}` history work on Gemini, which had rejected a string `content` in google-genai's own validator, so a Gemini caller got a 500 from this endpoint and from `/v1/structured`. `prompt_cache` is passed as the `AIPromptCacheHint` keyword. From 2.28.0 the library refuses a forced `tool_choice` on Claude Opus 5.5 and Fable 5.1 with a bare `ValueError` before the network call; the handler turns that one, matched by the library's wording, into a 400 and lets any other `ValueError` stay a 500. |
+| `POST /v1/conversations/turn` | `asend_conversation(...)` | Stateless; caller sends full history each turn and executes tools itself (ADR-0018 in the library repo). Library 2.26.1 made the documented `{role, content}` history work on Gemini, which had rejected a string `content` in google-genai's own validator, so a Gemini caller got a 500 from this endpoint and from `/v1/structured`. `prompt_cache` is passed as the `AIPromptCacheHint` keyword. The `conversation_token` holds what the serving engine's `extend_messages_with_turn` appends for the turn (v2), so replay splices in that engine's wire shape; see "Model fallback". From 2.28.0 the library refuses a forced `tool_choice` on Claude Opus 5.5 and Fable 5.1 with a bare `ValueError` before the network call; the handler turns that one, matched by the library's wording, into a 400 and lets any other `ValueError` stay a 500. |
 | `POST /v1/embeddings` | `agenerate_embeddings` / `agenerate_embeddings_batch` | |
 | `POST /v1/tokens/count` | `count_tokens(...)` | Sync; threadpool. |
 | `GET /v1/models` | `list_model_names` + `capabilities` + pricing registry | Read-only registry data: context windows, rates, lifecycle status, replacements. On Gemini `list_model_names` queries the live catalogue from library 2.26.1 and can block and sleep, which is why the handler runs it in the threadpool; the library caches the outcome per client for 15 minutes, so the pool holds one answer per engine rather than one per request. |
@@ -56,7 +56,8 @@ enforcement, and middleware stay in the library.
 `AIFactory.get_*` constructs a new provider client per call, and each
 construction re-reads `.env`, re-parses the middleware YAML, and (Gemini only)
 makes a `models.get` network round trip. The service therefore keeps a
-process-wide dict of engine clients keyed by `(engine, model)`, built on first
+process-wide dict of engine clients keyed by `(engine, model)` (completions add
+whether the client carries the fallback chain; see "Model fallback"), built on first
 use and reused. Reuse is safe because engine instances hold no
 per-conversation state, provider SDK clients are thread-safe, and the
 library's mutable instance attributes are idempotent lazy caches.
@@ -74,6 +75,86 @@ Implemented in `clients.py`.
 
 A construction failure leaves the key cold, so a request that arrives after
 the misconfiguration is fixed succeeds without a restart.
+
+
+## Model fallback
+
+Library 2.32.0 adds a fallback chain: `AIFactory.get_ai_completions_client`
+returns an `AiFallbackCompletions` wrapping the primary engine when
+`COMPLETIONS_FALLBACKS` (or a `fallbacks=` argument) names candidates, and a
+request whose failure carries a `fallback_reason` in `COMPLETIONS_FALLBACK_ON`
+is retried on the next one. The chain logic is entirely the library's. What
+the service owns is below.
+
+**Which clients carry the chain.** The factory reads the setting whenever
+`fallbacks` is None, so leaving it to the factory would wrap every pooled
+client, including the ones batches, token counts, and the model catalogue use.
+The service always passes `fallbacks` explicitly: the parsed chain for the
+three generation routes, `[]` for everything else. The completions pool key
+grows a third part, `(engine, model, fallback)`, because the wrapper and the
+plain engine are different objects. A candidate naming exactly the requested
+model is dropped from that request's chain, since retrying an overloaded model
+on itself spends a second call on the same failure. A request's
+`"fallback": false` selects the plain entry.
+
+**Which model served.** Responses report the engine and model that answered,
+not the ones requested, plus `served_by_fallback`. Conversation turns and
+structured calls read the route stamp the wrapper puts on `AITurnResult` and
+`AIStructuredOutputResult`. That stamp is the only reliable source for a turn:
+once history is engine-shaped the library pins the turn to that engine without
+failing over, so a fallback can serve a turn with no fallback event logged.
+
+A text prompt returns a bare string, and the wrapper's `last_route` is
+per-client state on a client every request shares, so a stream, or a call that
+ran in the threadpool, can read it after another request has moved it.
+Instead, `fallback.py` attaches a filter to the library's fallback logger and
+copies the `served_by_fallback` record's `fallback_to` into a collector held
+in a ContextVar, which each request sets for itself. Starlette carries the
+request's context onto the threadpool workers that drive a stream, and the
+collector is a mutable object, so a record lands only in the collector of the
+request whose call logged it. No record means the primary served. The filter
+raises the logger to WARNING if the configured level would drop that record
+before any filter runs.
+
+The record's field names (`ai_fallback_event`, `fallback_to`) are documented
+in the library's README as a log-pipeline contract, and the service reads them
+the same way a pipeline would. `parse_fallback_candidates`, `FALLBACK_EVENT_SERVED`,
+and the provider registry's `get_ai_provider_spec` are public module-level
+names in the library, imported from their submodules because the package root
+does not re-export them.
+
+**Cost.** The wrapper reports the primary's capabilities, pricing included, so
+`usd_cost` for a fallback-served call is priced at a plain pooled client for
+the fallback's engine and model. Cost events need nothing: each engine emits
+its own, so the sink already records the fallback's engine and model.
+
+**Startup check.** The library validates fallback engine tokens when it builds
+a client, which here is the first request per pool key, so a typo would
+surface as failed requests on the first outage. `verify_fallback_config`
+runs at startup, checks every engine token against the provider registry and
+every reason against `AiFallbackReason`, refuses to start on either, and logs
+the chain.
+
+**Conversation tokens (v2).** A v1 token held the turn's `raw_content`, and
+replay wrapped it as the content of the caller's assistant message. That is the
+Anthropic and Bedrock shape only: OpenAI's `raw_content` is a whole message and
+Gemini's a parts list, so neither ever replayed, and a conversation that failed
+over to OpenAI broke on its second turn. A v2 token holds the messages the
+serving engine's own `extend_messages_with_turn` appends for the turn (a
+fallback client routes that call by the turn's stamp), and replay splices them
+in place of the caller's message. A model without tool-use support refuses
+`extend_messages_with_turn`, and its turn is still encoded as v1. v1 tokens
+remain accepted.
+
+**Known limitation (library).** The wrapper decides which engine shaped a
+history from the messages' shape. An OpenAI text-only turn serializes as
+`{"role": "assistant", "content": "...", "annotations": []}`, which that check
+reads as provider-neutral, so the next turn starts at the primary. When the
+primary is Claude, Anthropic rejects the unknown `annotations` key with a 400,
+which is not a fallback reason. Seen live: a turn that failed over from Claude
+to OpenAI gets a 400 on its next turn. The fix belongs in the library, either
+in `history_family_of` or in how the OpenAI engine serializes a turn. The
+service does not rewrite engine-shaped messages to work around it.
 
 ## Authentication
 
@@ -297,8 +378,9 @@ message text.
 | `AiProviderError` | anything else in the hierarchy | 502 | `provider_error` |
 | Request validation | malformed body | 422 | FastAPI default |
 
-Every mapped failure returns the same body: `error`, `detail`, `engine`, and
-`provider_status`. `provider_status` is the provider's status when one was
+Every mapped failure returns the same body: `error`, `detail`, `engine`,
+`provider_status`, and `fallback_reason` (the library's `AiFallbackReason`
+value from 2.31.0, or null). `provider_status` is the provider's status when one was
 reported, and never equals the response status — a provider 500 surfaces as a
 502 here.
 

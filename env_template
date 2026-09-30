@@ -84,6 +84,21 @@ EMBEDDING_ENGINE=google-gemini
 # COMPLETIONS_MODEL_NAME=
 EMBEDDING_MODEL_NAME=gemini-embedding-001
 
+# --- Model fallback ---
+# Ordered engine:model pairs a request is retried on when the requested model
+# is overloaded, rate limited past its backoff, or out of quota. Applies
+# behind whatever engine a request names; a pair naming the requested model
+# itself is skipped. Each fallback engine needs its own key above. The split
+# is on the first colon, so Bedrock ids such as bedrock:amazon.nova-lite-v1:0
+# work. Unset means no fallback. A request sends "fallback": false to opt out.
+# The service refuses to start if a pair names an unknown engine.
+# COMPLETIONS_FALLBACKS=openai:gpt-5.6-luna,google-gemini:gemini-3.7-flash
+# Reasons that trigger a fallback. Default:
+# unavailable,rate_limited,quota_exhausted. Add model_unavailable to also
+# fail over on an unknown or retired model id, which is off by default
+# because it usually means a typo that a working fallback would hide.
+# COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted
+
 # Any server speaking the OpenAI Chat Completions protocol (vLLM, Ollama,
 # LiteLLM, a hosted vendor's compatible endpoint), reached with
 # engine "openai-compatible". One server per deployment: the URL is read from

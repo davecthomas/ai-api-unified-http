@@ -144,6 +144,18 @@ PROMPT_CACHE_DESCRIPTION: Final[str] = (
     "reuse. Engines without a cache control ignore it."
 )
 
+FALLBACK_DESCRIPTION: Final[str] = (
+    "Whether the request may be retried on the deployment's fallback chain "
+    "(COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate "
+    "limited past its backoff, or out of quota. Set false when only the "
+    "requested model will do. Has no effect on a deployment with no chain."
+)
+
+SERVED_BY_FALLBACK_DESCRIPTION: Final[str] = (
+    "True when the requested model failed and a fallback answered. `engine` "
+    "and `model` then name the fallback, and `usd_cost` is priced at it."
+)
+
 
 class CompletionRequest(EngineSelection):
     prompt: str = Field(max_length=MAX_PROMPT_CHARS)
@@ -165,6 +177,7 @@ class CompletionRequest(EngineSelection):
     prompt_cache: PromptCache | None = Field(
         default=None, description=PROMPT_CACHE_DESCRIPTION
     )
+    fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
     stream: bool = Field(
         default=False,
         description="When true the response is text/event-stream (SSE). "
@@ -184,7 +197,11 @@ class CompletionResponse(BaseModel):
     text: str = Field(description="Generated completion text.")
     engine: str = Field(description="Engine that served the request.")
     model: str | None = Field(
-        default=None, description="Model requested, or null for the engine default."
+        default=None,
+        description=("Model that served the request, or null for the engine default."),
+    )
+    served_by_fallback: bool = Field(
+        default=False, description=SERVED_BY_FALLBACK_DESCRIPTION
     )
 
 
@@ -202,6 +219,7 @@ class StructuredRequest(EngineSelection):
     prompt_cache: PromptCache | None = Field(
         default=None, description=PROMPT_CACHE_DESCRIPTION
     )
+    fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
 
 
 USD_COST_DESCRIPTION: Final[str] = (
@@ -261,6 +279,9 @@ class StructuredResponse(BaseModel):
     )
     engine: str
     model: str | None = None
+    served_by_fallback: bool = Field(
+        default=False, description=SERVED_BY_FALLBACK_DESCRIPTION
+    )
 
 
 class ToolCall(BaseModel):
@@ -302,6 +323,9 @@ class ConversationTurnResponse(BaseModel):
     )
     engine: str
     model: str | None = None
+    served_by_fallback: bool = Field(
+        default=False, description=SERVED_BY_FALLBACK_DESCRIPTION
+    )
 
 
 class ToolSchema(BaseModel):
@@ -341,6 +365,7 @@ class ConversationTurnRequest(EngineSelection):
     prompt_cache: PromptCache | None = Field(
         default=None, description=PROMPT_CACHE_DESCRIPTION
     )
+    fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
 
 
 class EmbeddingsRequest(BaseModel):
@@ -757,6 +782,16 @@ class ErrorResponse(BaseModel):
     provider_status: int | None = Field(
         default=None,
         description="HTTP status reported by the provider, when one was reported.",
+    )
+    fallback_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why the provider failure might be served by another model: "
+            "unavailable, rate_limited, quota_exhausted, or model_unavailable. "
+            "Null when another model would fail the same way (a validation or "
+            "authentication error, a timeout). On a deployment with a "
+            "fallback chain, the failure is from the last model tried."
+        ),
     )
 
 

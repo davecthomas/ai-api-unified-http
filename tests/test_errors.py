@@ -140,7 +140,13 @@ def test_token_limit_detail_names_the_minimum_that_would_work(
 def test_error_body_shape_is_uniform(client: TestClient) -> None:
     for kind in _EXCEPTIONS:
         body = client.get(f"/boom/{kind}").json()
-        assert set(body) == {"error", "detail", "engine", "provider_status"}
+        assert set(body) == {
+            "error",
+            "detail",
+            "engine",
+            "provider_status",
+            "fallback_reason",
+        }
         assert isinstance(body["error"], str) and body["error"]
         assert isinstance(body["detail"], str) and body["detail"]
 
@@ -204,7 +210,13 @@ class TestErrorEnvelope:
         response = enveloped.get("/kaboom")
         assert response.status_code == 500
         body = response.json()
-        assert set(body) == {"error", "detail", "engine", "provider_status"}
+        assert set(body) == {
+            "error",
+            "detail",
+            "engine",
+            "provider_status",
+            "fallback_reason",
+        }
         assert body["error"] == "internal_error"
 
     def test_the_traceback_never_reaches_the_caller(

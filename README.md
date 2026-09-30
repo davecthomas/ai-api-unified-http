@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.10.0
+# ai-api-unified-http 1.11.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -247,6 +247,9 @@ container as mounted secrets, so nothing sensitive lands in the image or in the
 service's environment configuration.
 
 `make gcp-deploy` builds with Cloud Build, so no local Docker is needed.
+Pass `FALLBACKS=openai:gpt-5.6-luna,google-gemini` to deploy with a
+[fallback chain](#model-fallback); each engine in it needs its key among the
+secrets.
 
 Cloud Run answers `/healthz` at its own frontend and never forwards it to the
 container. Use `/health` for health checks there; both paths return the same
@@ -373,6 +376,9 @@ orders of magnitude rather than slightly.
 `/v1/completions` reports no cost, because the library's buffered completion
 call returns bare text with no usage to price.
 
+When a fallback answered (see [Model fallback](#model-fallback)), `usd_cost`
+is priced at the fallback's rates, not the requested model's.
+
 ### Prompt caching
 
 `/v1/completions` (buffered and streamed), `/v1/structured`,
@@ -401,6 +407,58 @@ apart.
 A hit needs the prefix to match byte for byte. A timestamp or request id in
 the system prompt defeats it. Whether a call hit shows in
 `usage.cached_input_tokens`, and `usd_cost` prices the reads and writes.
+
+### Model fallback
+
+A deployment can name backup models, tried in order when the requested one
+cannot serve a request because it is overloaded, rate limited past the
+library's backoff, or out of quota. The chain is the library's (ai-api-unified
+2.32.0), configured with the library's own settings:
+
+```bash
+# Ordered engine:model pairs. Each engine needs its own provider key.
+COMPLETIONS_FALLBACKS=openai:gpt-5.6-luna,google-gemini:gemini-3.7-flash
+# Optional. Which failures move a request on; this is the default.
+COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted
+```
+
+The chain sits behind whatever engine a request names, so a caller asking for
+`claude` is served by OpenAI only when Claude fails in one of those ways. A
+pair naming the requested model itself is skipped. Validation errors,
+authentication failures, timeouts, and refusals never fail over, and neither
+does an unknown model id unless `model_unavailable` is added to
+`COMPLETIONS_FALLBACK_ON` (it is off by default because it usually means a
+typo that a working fallback would hide). The service refuses to start if the
+chain names an engine that does not exist, so a typo surfaces at deploy time
+rather than during an outage.
+
+`/v1/completions` (buffered and streamed), `/v1/structured`, and
+`/v1/conversations/turn` take part. Responses name the model that actually
+answered:
+
+```json
+{"text": "...", "engine": "openai", "model": "gpt-5.6-luna",
+ "served_by_fallback": true}
+```
+
+A stream reports the same three fields in its `done` event, and it fails over
+only before its first chunk. `usd_cost` is priced at the model that answered.
+When every model fails, the error body carries the last one's `engine` and a
+`fallback_reason` (`unavailable`, `rate_limited`, `quota_exhausted`,
+`model_unavailable`, or null when no other model would have done better).
+
+Send `"fallback": false` on a request when only the requested model will do.
+Batches, token counts, and the model catalogue always use the requested
+engine.
+
+**Conversations.** A turn that failed over returns a `conversation_token` in
+the fallback's shape, and the library sends later turns carrying it back to
+the engine that shaped it, whatever engine the request names. Keep sending
+the engine you asked for; `engine` in each response tells you which served.
+
+Every failover is logged by the library at ERROR (`FALLBACK: ...`), and each
+request a fallback served at WARNING (`FALLBACK SERVED: ...`), with structured
+fields a log pipeline can alert on.
 
 ### Embedding queries and documents
 
@@ -655,7 +713,7 @@ it as the content of an assistant message, in the position that turn occurred:
 ```json
 {"messages": [
   {"role": "user", "content": "first question"},
-  {"role": "assistant", "content": "v1.W3siY2l0YXR..."},
+  {"role": "assistant", "content": "v2.eyJtZXNzYWdl..."},
   {"role": "user", "content": "follow up"}
 ]}
 ```
@@ -663,7 +721,13 @@ it as the content of an assistant message, in the position that turn occurred:
 Ordering is yours, because only you know where a new user message belongs
 relative to the previous assistant turn. Echo the token without parsing it: it
 carries provider-specific content whose shape changes with the engine and the
-library version. A token from an older service version is rejected with a 400.
+library version. A token from a version the service no longer accepts is
+rejected with a 400.
+
+From 1.11.0 the token holds the turn in the answering engine's own replay
+shape. Before that, an OpenAI or Gemini token could not be replayed at all:
+the second turn came back as a 400 from the provider. Claude tokens from
+earlier versions (`v1.`) are still accepted.
 
 `tool_choice` forces the model to call the named tool. Claude Opus 5.5 and
 Fable 5.1 refuse any forced choice, so a turn setting one on those models is

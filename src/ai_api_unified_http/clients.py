@@ -20,6 +20,7 @@ every cold start behind one Gemini network call, and a duplicate build is
 harmless because clients carry no state worth preserving.
 """
 
+import os
 import threading
 from typing import Any, Final
 
@@ -27,16 +28,26 @@ from ai_api_unified import (
     AIBaseCompletions,
     AIBaseEmbeddings,
     AIFactory,
+    AIFallbackCandidate,
     AIVoiceFactory,
+)
+from ai_api_unified.completions.ai_fallback_completions import (
+    parse_fallback_candidates,
 )
 
 from .errors import ProviderNotConfiguredError, missing_variable_from
+from .fallback import COMPLETIONS_FALLBACKS_ENV
 
 # Key is (engine, model); model is None when the caller accepts the engine
 # default, which is a distinct pool entry from any named model.
 PoolKey = tuple[str, str | None]
 
-_completions_pool: Final[dict[PoolKey, AIBaseCompletions]] = {}
+# Completions add a third part: whether the client carries the configured
+# fallback chain. A request that turns fallback off gets the plain engine,
+# which is a different object from the chain wrapper around it.
+CompletionsPoolKey = tuple[str, str | None, bool]
+
+_completions_pool: Final[dict[CompletionsPoolKey, AIBaseCompletions]] = {}
 _embeddings_pool: Final[dict[PoolKey, AIBaseEmbeddings]] = {}
 # Image and video clients share a pool: both are keyed by model rather than
 # by an engine token, and neither has a typed base exported for annotation.
@@ -44,22 +55,29 @@ _media_pool: Final[dict[PoolKey, Any]] = {}
 _pool_lock: Final[threading.Lock] = threading.Lock()
 
 
-def get_completions_client(engine: str, model: str | None = None) -> AIBaseCompletions:
+def get_completions_client(
+    engine: str, model: str | None = None, *, fallback: bool = False
+) -> AIBaseCompletions:
     """Return the pooled completions client for this engine and model.
 
     Args:
         engine: Completions engine token, e.g. "openai", "claude", "google-gemini".
         model: Model name, or None to accept the engine's configured default.
+        fallback: Whether the client should retry a failed request on the
+            chain in `COMPLETIONS_FALLBACKS`. False returns the plain engine,
+            which is what batches, token counts, and pricing need. True with
+            no chain configured also returns the plain engine.
 
     Returns:
         AIBaseCompletions: The pooled client, built on first use for this key.
+            With a chain it is an `AiFallbackCompletions` wrapping the engine.
 
     Raises:
         AiProviderError: Propagated from the library when the engine is unknown
             or its credentials are missing. Surfacing at first use per key,
             rather than per request, is a documented consequence of pooling.
     """
-    key: PoolKey = (engine, model)
+    key: CompletionsPoolKey = (engine, model, fallback)
     cached: AIBaseCompletions | None = _completions_pool.get(key)
     if cached is not None:
         return cached
@@ -69,11 +87,42 @@ def get_completions_client(engine: str, model: str | None = None) -> AIBaseCompl
         engine,
         model_name=model,
         completions_engine=engine,
+        # Always explicit: None would let the factory read the setting itself
+        # and wrap even the clients that must stay plain.
+        fallbacks=fallback_chain_for(engine, model) if fallback else [],
     )
     with _pool_lock:
         # setdefault keeps whichever client won the race; both are equivalent.
         client: AIBaseCompletions = _completions_pool.setdefault(key, built)
     return client
+
+
+def fallback_chain_for(engine: str, model: str | None) -> list[AIFallbackCandidate]:
+    """Return the configured fallback chain for a requested engine and model.
+
+    Callers choose the engine per request, so the one deployment-wide chain is
+    applied behind whatever they chose. A candidate naming exactly the
+    requested model is dropped: retrying an overloaded model on itself spends
+    a second call on the same failure.
+
+    Args:
+        engine: The requested engine token.
+        model: The requested model, or None for the engine default.
+
+    Returns:
+        list[AIFallbackCandidate]: Candidates in configured order; empty when
+            `COMPLETIONS_FALLBACKS` is unset or blank.
+    """
+    candidates: list[AIFallbackCandidate] = parse_fallback_candidates(
+        os.environ.get(COMPLETIONS_FALLBACKS_ENV, "")
+    )
+    # The parser lowercases engine tokens, and so does the factory.
+    requested: str = engine.strip().lower()
+    return [
+        candidate
+        for candidate in candidates
+        if not (candidate.engine == requested and model and candidate.model == model)
+    ]
 
 
 def get_embeddings_client(engine: str, model: str | None = None) -> AIBaseEmbeddings:

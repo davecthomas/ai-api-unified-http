@@ -98,7 +98,7 @@ def test_factory_receives_the_library_argument_names() -> None:
         clients.get_embeddings_client("voyage", "voyage-3")
 
     completions.assert_called_once_with(
-        model_name="claude-opus-5", completions_engine="claude"
+        model_name="claude-opus-5", completions_engine="claude", fallbacks=[]
     )
     embeddings.assert_called_once_with(embedding_engine="voyage", model_name="voyage-3")
 

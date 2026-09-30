@@ -22,10 +22,12 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any, Final
 
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
+
+from .fallback import ServedRoute
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -61,7 +63,10 @@ def format_sse(event: str, data: dict[str, Any]) -> str:
 
 
 async def sse_from_sync_iterator(
-    chunks: Iterator[str], engine: str, model: str | None
+    chunks: Iterator[str],
+    engine: str,
+    model: str | None,
+    route: Callable[[], ServedRoute] | None = None,
 ) -> AsyncIterator[str]:
     """Bridge the library's blocking text iterator onto an SSE byte stream.
 
@@ -69,6 +74,9 @@ async def sse_from_sync_iterator(
         chunks: The library's synchronous chunk iterator.
         engine: Engine token, echoed in the terminal event for attribution.
         model: Model name, echoed in the terminal event.
+        route: Reports which model served the stream, read once the stream
+            has ended. A fallback chain decides that at the first chunk, so
+            the terminal event is the first point it is known for certain.
 
     Yields:
         str: SSE frames — zero or more `chunk` events, then exactly one
@@ -103,8 +111,15 @@ async def sse_from_sync_iterator(
         )
         return
 
+    served: ServedRoute = route() if route else ServedRoute(engine, model)
     yield format_sse(
-        EVENT_DONE, {"engine": engine, "model": model, "chunks": chunk_count}
+        EVENT_DONE,
+        {
+            "engine": served.engine,
+            "model": served.model,
+            "served_by_fallback": served.served_by_fallback,
+            "chunks": chunk_count,
+        },
     )
 
 

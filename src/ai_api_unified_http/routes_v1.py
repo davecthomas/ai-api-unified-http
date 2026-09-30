@@ -58,11 +58,13 @@ from .clients import (
 )
 from .conversation_token import (
     InvalidConversationTokenError,
-    decode_conversation_token,
     encode_conversation_token,
+    encode_turn_messages,
     looks_like_conversation_token,
+    replay_messages,
 )
 from .delivery import artifact_response, not_found
+from .fallback import ServedRoute, served_route, start_route_tracking
 from .jobs import run_video_job
 from .schemas import (
     MAX_VOICES_RETURNED,
@@ -360,6 +362,54 @@ def _usd_cost(client: Any, usage: Any) -> str | None:
     return str(cost)
 
 
+def _route_of_result(
+    client: Any, engine: str, model: str | None, result: Any
+) -> ServedRoute:
+    """Read which model served a conversation turn or structured call.
+
+    A fallback client stamps every such result with the engine and model that
+    served it. That stamp, not the fallback log event, is what these calls
+    read: once a conversation's history is engine-shaped the library pins the
+    turn to that engine without failing over, so a turn can be served by a
+    fallback with no event logged for it.
+
+    Args:
+        client: The pooled client the route called.
+        engine: The requested engine.
+        model: The requested model, or None for the engine default.
+        result: The library's `AITurnResult` or `AIStructuredOutputResult`.
+
+    Returns:
+        ServedRoute: The requested engine and model when the primary served,
+            else the stamped fallback.
+    """
+    served_engine: str | None = getattr(result, "provider_engine", None)
+    if not served_engine:
+        # A plain engine client leaves the stamp empty: it served the call.
+        return ServedRoute(engine=engine, model=model)
+    served_model: str | None = getattr(result, "model_name", None)
+    primary_model: str | None = getattr(
+        getattr(client, "primary", None), "model_name", None
+    )
+    if served_engine == engine.strip().lower() and served_model == primary_model:
+        return ServedRoute(engine=engine, model=model)
+    return ServedRoute(
+        engine=served_engine, model=served_model or None, served_by_fallback=True
+    )
+
+
+def _pricing_client(client: Any, route: ServedRoute) -> Any:
+    """Return the client whose rates price a call served on `route`.
+
+    A fallback client reports the primary's capabilities, pricing included,
+    so a call a fallback served must be priced at a plain client for that
+    fallback. The primary's own calls keep the client they were made on.
+    """
+    if not route.served_by_fallback:
+        return client
+    return get_completions_client(route.engine, route.model)
+
+
 def _tools(tools: list[Any] | None) -> list[AITool] | None:
     """Convert caller tool schemas into library tools.
 
@@ -406,10 +456,35 @@ def _expand_conversation_tokens(
             "role"
         ) == "assistant" and looks_like_conversation_token(content)
         if is_token:
-            expanded.append({**message, "content": decode_conversation_token(content)})
+            expanded.extend(replay_messages(message))
         else:
             expanded.append(message)
     return expanded
+
+
+def _turn_token(client: Any, turn: Any) -> str | None:
+    """Encode a turn for replay, in the shape of the engine that served it.
+
+    The engine's own `extend_messages_with_turn` knows its wire shape: a whole
+    message for OpenAI, a parts entry for Gemini, content blocks for Claude.
+    A fallback client sends it to the engine the turn's route stamp names.
+    A model without tool-use support refuses that call, and its turn is
+    carried as raw content instead.
+
+    Args:
+        client: The pooled client that ran the turn.
+        turn: The library's `AITurnResult`.
+
+    Returns:
+        str | None: The token, or None when the turn carried no content.
+    """
+    if turn.raw_content is None:
+        return None
+    try:
+        messages: list[dict[str, Any]] = client.extend_messages_with_turn([], turn)
+    except AiProviderCapabilityUnsupportedError:
+        return encode_conversation_token(turn.raw_content)
+    return encode_turn_messages(messages)
 
 
 def _registry_entry(model: str) -> Any | None:
@@ -628,7 +703,12 @@ async def completions(
         CompletionResponse | StreamingResponse: The completion text, or an SSE
             stream when `stream` is true.
     """
-    client = get_completions_client(request.engine, request.model)
+    client = get_completions_client(
+        request.engine, request.model, fallback=request.fallback
+    )
+    # A text prompt returns a bare string, so which model served it is read
+    # from the library's fallback event for this request (see fallback.py).
+    collector = start_route_tracking()
 
     # Both call paths take the same parameters object, so attachments work on
     # a stream exactly as they do on a buffered call.
@@ -642,7 +722,12 @@ async def completions(
             request.prompt, other_params=params
         )
         return StreamingResponse(
-            sse_from_sync_iterator(chunks, request.engine, request.model),
+            sse_from_sync_iterator(
+                chunks,
+                request.engine,
+                request.model,
+                route=lambda: served_route(collector, request.engine, request.model),
+            ),
             media_type=SSE_MEDIA_TYPE,
             headers=SSE_HEADERS,
         )
@@ -654,7 +739,13 @@ async def completions(
         request_timeout_seconds=request.request_timeout_seconds,
         other_params=params,
     )
-    return CompletionResponse(text=text, engine=request.engine, model=request.model)
+    route: ServedRoute = served_route(collector, request.engine, request.model)
+    return CompletionResponse(
+        text=text,
+        engine=route.engine,
+        model=route.model,
+        served_by_fallback=route.served_by_fallback,
+    )
 
 
 @router.post(
@@ -683,7 +774,9 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
             detail="Provide either prompt or messages.",
         )
 
-    client = get_completions_client(request.engine, request.model)
+    client = get_completions_client(
+        request.engine, request.model, fallback=request.fallback
+    )
     result = await client.asend_structured_output(
         request.prompt,
         response_schema=request.response_schema,
@@ -693,14 +786,16 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
         request_timeout_seconds=request.request_timeout_seconds,
         prompt_cache=_cache_hint(request.prompt_cache),
     )
+    route: ServedRoute = _route_of_result(client, request.engine, request.model, result)
     return StructuredResponse(
         data=result.data,
         finish_reason=result.finish_reason.value,
         usage=_usage(result.usage),
-        usd_cost=_usd_cost(client, result.usage),
+        usd_cost=_usd_cost(_pricing_client(client, route), result.usage),
         raw_text=result.raw_text,
-        engine=request.engine,
-        model=request.model,
+        engine=route.engine,
+        model=route.model,
+        served_by_fallback=route.served_by_fallback,
     )
 
 
@@ -733,7 +828,9 @@ async def conversation_turn(
         # token costs no provider call.
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    client = get_completions_client(request.engine, request.model)
+    client = get_completions_client(
+        request.engine, request.model, fallback=request.fallback
+    )
     try:
         turn = await client.asend_conversation(
             request.system_prompt,
@@ -752,6 +849,7 @@ async def conversation_turn(
         if request.tool_choice is None or _FORCED_TOOL_CHOICE not in str(error):
             raise
         raise HTTPException(status_code=400, detail=str(error)) from error
+    route: ServedRoute = _route_of_result(client, request.engine, request.model, turn)
     return ConversationTurnResponse(
         text=turn.text,
         tool_calls=[
@@ -760,10 +858,11 @@ async def conversation_turn(
         ],
         finish_reason=turn.finish_reason.value,
         usage=_usage(turn.usage),
-        usd_cost=_usd_cost(client, turn.usage),
-        conversation_token=encode_conversation_token(turn.raw_content),
-        engine=request.engine,
-        model=request.model,
+        usd_cost=_usd_cost(_pricing_client(client, route), turn.usage),
+        conversation_token=_turn_token(client, turn),
+        engine=route.engine,
+        model=route.model,
+        served_by_fallback=route.served_by_fallback,
     )
 
 

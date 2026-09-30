@@ -141,6 +141,7 @@ def _error_response(
     detail: str,
     engine: str | None = None,
     provider_status: int | None = None,
+    fallback_reason: str | None = None,
 ) -> JSONResponse:
     """Build the uniform error body shared by every failure path."""
     body = ErrorResponse(
@@ -148,6 +149,7 @@ def _error_response(
         detail=detail,
         engine=engine,
         provider_status=provider_status,
+        fallback_reason=fallback_reason,
     )
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
@@ -167,10 +169,12 @@ async def handle_provider_request_error(
     """
     assert isinstance(exc, AiProviderRequestError)
     status_code, error_code = _status_for_request_error(exc)
+    reason = exc.fallback_reason
     logger.warning(
-        "provider request failed: engine=%s provider_status=%s -> %s",
+        "provider request failed: engine=%s provider_status=%s reason=%s -> %s",
         exc.provider_engine,
         exc.status_code,
+        reason.value if reason else None,
         status_code,
     )
     return _error_response(
@@ -179,6 +183,7 @@ async def handle_provider_request_error(
         detail=str(exc),
         engine=exc.provider_engine,
         provider_status=exc.status_code,
+        fallback_reason=reason.value if reason else None,
     )
 
 

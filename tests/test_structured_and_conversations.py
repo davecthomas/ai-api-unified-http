@@ -16,6 +16,7 @@ from ai_api_unified import (
     AIFinishReason,
     AIPromptCacheHint,
     AIPromptCacheRetention,
+    AiProviderCapabilityUnsupportedError,
     AIStructuredOutputResult,
     AITokenUsage,
     AIToolCall,
@@ -27,6 +28,7 @@ from ai_api_unified_http.conversation_token import (
     InvalidConversationTokenError,
     decode_conversation_token,
     encode_conversation_token,
+    encode_turn_messages,
 )
 
 STRUCTURED: str = "/v1/structured"
@@ -57,6 +59,11 @@ def fake_client() -> MagicMock:
             usage=USAGE,
         )
     )
+    # The Anthropic shape: the engine wraps its content blocks in a message.
+    client.extend_messages_with_turn.side_effect = lambda messages, turn: [
+        *messages,
+        {"role": "assistant", "content": turn.raw_content},
+    ]
     return client
 
 
@@ -280,6 +287,79 @@ class TestConversationTurn:
         assert sent[1] == {"role": "assistant", "content": content}
         assert sent[2] == {"role": "user", "content": "follow up"}
 
+    def test_a_v2_token_is_replaced_by_the_messages_it_carries(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        # OpenAI's turn is a whole message, not content to wrap. A v1 token
+        # nested it inside the caller's message, which OpenAI rejected.
+        openai_turn = {"role": "assistant", "content": "Blue.", "annotations": []}
+        token = encode_turn_messages([openai_turn])
+
+        client.post(
+            TURN,
+            json={
+                "engine": "openai",
+                "system_prompt": "s",
+                "messages": [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": token},
+                    {"role": "user", "content": "follow up"},
+                ],
+            },
+        )
+        args, _ = fake_client.asend_conversation.call_args
+        assert args[1] == [
+            {"role": "user", "content": "first"},
+            openai_turn,
+            {"role": "user", "content": "follow up"},
+        ]
+
+    def test_the_token_carries_the_serving_engines_own_shape(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        gemini_turn = {"role": "model", "parts": [{"text": "hello"}]}
+        fake_client.extend_messages_with_turn.side_effect = lambda messages, turn: [
+            *messages,
+            gemini_turn,
+        ]
+        token = client.post(
+            TURN, json={"engine": "google-gemini", "system_prompt": "s", "messages": []}
+        ).json()["conversation_token"]
+
+        assert token.startswith("v2.")
+        assert decode_conversation_token(token) == {"messages": [gemini_turn]}
+
+    def test_a_model_without_tool_use_gets_a_v1_token(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        # extend_messages_with_turn refuses on such a model; the turn still
+        # has to come back replayable.
+        fake_client.extend_messages_with_turn.side_effect = (
+            AiProviderCapabilityUnsupportedError("no tool use")
+        )
+        token = client.post(
+            TURN, json={"engine": "claude", "system_prompt": "s", "messages": []}
+        ).json()["conversation_token"]
+
+        assert token.startswith("v1.")
+        assert decode_conversation_token(token) == [{"type": "text", "text": "hello"}]
+
+    def test_a_v2_token_without_a_turn_is_refused(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        from ai_api_unified_http.conversation_token import _pack
+
+        response = client.post(
+            TURN,
+            json={
+                "engine": "claude",
+                "system_prompt": "s",
+                "messages": [{"role": "assistant", "content": _pack("v2", [1, 2])}],
+            },
+        )
+        assert response.status_code == 400
+        fake_client.asend_conversation.assert_not_called()
+
     def test_ordinary_assistant_text_is_left_alone(
         self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
     ) -> None:
@@ -431,7 +511,7 @@ class TestConversationToken:
         # The version prefix exists so an old token fails with a message
         # instead of being replayed to a provider as malformed content.
         with pytest.raises(InvalidConversationTokenError) as caught:
-            decode_conversation_token("v2.eyJhIjogMX0=")
+            decode_conversation_token("v99.eyJhIjogMX0=")
         assert "new conversation" in str(caught.value)
 
     @pytest.mark.parametrize("bad", ["no-separator", "v1.@@@", "v1.aGVsbG8="])
