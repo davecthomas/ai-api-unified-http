@@ -14,7 +14,7 @@ dependencies = [
     # construction with "requires optional extra". middleware-pii-redaction is
     # required by hard requirement 2, which puts every call through the
     # library's redaction and observability middleware.
-    "ai-api-unified[anthropic,google-gemini,middleware-pii-redaction,openai] (==2.32.0)",
+    "ai-api-unified[anthropic,google-gemini,middleware-pii-redaction,openai] (==2.32.1)",
     "fastapi (>=0.115,<1.0)",
     # Read directly by config.py. It arrives transitively today, but a direct
     # import belongs in the direct dependencies.

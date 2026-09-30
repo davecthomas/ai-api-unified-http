@@ -146,15 +146,16 @@ in place of the caller's message. A model without tool-use support refuses
 `extend_messages_with_turn`, and its turn is still encoded as v1. v1 tokens
 remain accepted.
 
-**Known limitation (library).** The wrapper decides which engine shaped a
-history from the messages' shape. An OpenAI text-only turn serializes as
-`{"role": "assistant", "content": "...", "annotations": []}`, which that check
-reads as provider-neutral, so the next turn starts at the primary. When the
-primary is Claude, Anthropic rejects the unknown `annotations` key with a 400,
-which is not a fallback reason. Seen live: a turn that failed over from Claude
-to OpenAI gets a 400 on its next turn. The fix belongs in the library, either
-in `history_family_of` or in how the OpenAI engine serializes a turn. The
-service does not rewrite engine-shaped messages to work around it.
+**Why the pin is 2.32.1.** On 2.32.0 a turn that failed over from Claude to
+OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
+`{"role": "assistant", "content": "...", "annotations": []}`, the wrapper read
+that history as provider-neutral and started the next turn at Claude, and
+Anthropic rejected the `annotations` key with a 400, which is not a fallback
+reason (ai-api-unified#65). 2.32.1 saves a text-only turn as plain
+`{"role", "content"}` and recognizes OpenAI SDK fields as OpenAI history.
+Checked live on 2.32.1: the second turn after a failover is answered, and an
+OpenAI turn replays on a healthy Claude. The service does not rewrite
+engine-shaped messages itself; replay shape stays the library's.
 
 ## Authentication
 

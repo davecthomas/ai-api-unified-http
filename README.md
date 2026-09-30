@@ -413,7 +413,7 @@ the system prompt defeats it. Whether a call hit shows in
 A deployment can name backup models, tried in order when the requested one
 cannot serve a request because it is overloaded, rate limited past the
 library's backoff, or out of quota. The chain is the library's (ai-api-unified
-2.32.0), configured with the library's own settings:
+2.32.1), configured with the library's own settings:
 
 ```bash
 # Ordered engine:model pairs. Each engine needs its own provider key.
