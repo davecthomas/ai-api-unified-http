@@ -291,6 +291,17 @@
             "title": "Prompt",
             "type": "string"
           },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCache"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it."
+          },
           "system_prompt": {
             "anyOf": [
               {
@@ -483,6 +494,17 @@
             "title": "Prompt",
             "type": "string"
           },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCache"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it."
+          },
           "request_timeout_seconds": {
             "anyOf": [
               {
@@ -593,6 +615,17 @@
             "description": "Model name; omit to use the engine's default model.",
             "title": "Model"
           },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCache"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it."
+          },
           "request_timeout_seconds": {
             "anyOf": [
               {
@@ -618,6 +651,7 @@
                 "type": "null"
               }
             ],
+            "description": "Name of a tool the model must call. Claude Opus 5.5 and Fable 5.1 refuse any forced choice, and a request setting one on those models is answered with 400 before it reaches the provider.",
             "title": "Tool Choice"
           },
           "tools": {
@@ -1250,6 +1284,36 @@
         "title": "ModelsResponse",
         "type": "object"
       },
+      "PromptCache": {
+        "description": "A request to cache the stable start of a prompt.\n\nMarks the system prompt and any tool definitions as a prefix the provider\nmay reuse on the next call. Caching changes cost and latency, never the\nanswer, so an engine that has no such control ignores the request rather\nthan refusing it:\n\n- `claude` sets a cache breakpoint on the system prompt. On conversation\n  turns it also caches the growing history.\n- `openai` and `openai-responses` send `key` as the prompt cache key.\n- `google-gemini` caches repeated prefixes on its own and needs no hint.\n\nA hit needs the prefix to be byte-identical, so keep timestamps, request\nids, and other per-call values out of the system prompt. Whether a call\nhit the cache shows in `usage.cached_input_tokens`, and the cost of\nwriting it in the `cache_write_*` counts.",
+        "properties": {
+          "key": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Routing key grouping calls that share a prefix. Used by OpenAI; other engines ignore it.",
+            "title": "Key"
+          },
+          "retention": {
+            "default": "default",
+            "description": "'default' is the provider's standard window (about five minutes on Anthropic). 'extended' asks for the longer one where the model offers it: one hour on Anthropic, 24 hours on OpenAI. Anthropic bills an extended write at twice the input rate against 1.25x for default, so it pays off only when calls sharing the prefix arrive more than about five minutes apart.",
+            "enum": [
+              "default",
+              "extended"
+            ],
+            "title": "Retention",
+            "type": "string"
+          }
+        },
+        "title": "PromptCache",
+        "type": "object"
+      },
       "SpeechRequest": {
         "description": "Text to synthesize, and how it should sound.\n\nThe result is stored rather than inlined, exactly as a generated image is,\nso it comes back as a reference and is fetched with a progress bar and a\nresumable range.",
         "properties": {
@@ -1423,6 +1487,17 @@
               }
             ],
             "title": "Prompt"
+          },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCache"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ask the provider to cache the system prompt and tool definitions for reuse. Engines without a cache control ignore it."
           },
           "request_timeout_seconds": {
             "anyOf": [
@@ -2141,7 +2216,7 @@
   "info": {
     "description": "HTTP interface to the ai-api-unified Python library. Breaking API changes bump the URI version (/v1 -> /v2); the service itself follows semantic versioning independently.",
     "title": "ai-api-unified-http",
-    "version": "1.9.2"
+    "version": "1.10.0"
   },
   "openapi": "3.1.0",
   "paths": {

@@ -15,7 +15,11 @@ from collections.abc import Iterator
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from ai_api_unified import AiProviderRequestError
+from ai_api_unified import (
+    AIPromptCacheHint,
+    AIPromptCacheRetention,
+    AiProviderRequestError,
+)
 from fastapi.testclient import TestClient
 
 PATH: str = "/v1/completions"
@@ -103,6 +107,69 @@ class TestBuffered:
         self, client: TestClient, pooled: MagicMock
     ) -> None:
         response = client.post(PATH, json={"prompt": "no engine"})
+        assert response.status_code == 422
+        pooled.assert_not_called()
+
+
+class TestPromptCache:
+    def test_a_cache_request_reaches_the_library_as_its_hint(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        client.post(
+            PATH,
+            json={
+                "engine": "openai",
+                "prompt": "hi",
+                "prompt_cache": {"retention": "extended", "key": "tenant-7"},
+            },
+        )
+        params = fake_client.asend_prompt.call_args.kwargs["other_params"]
+        assert params.prompt_cache == AIPromptCacheHint(
+            retention=AIPromptCacheRetention.EXTENDED, key="tenant-7"
+        )
+
+    def test_a_cache_request_alone_still_builds_parameters(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        # With no system prompt and no attachments there is otherwise nothing
+        # to carry, and the hint would be dropped on the floor.
+        client.post(PATH, json={"engine": "claude", "prompt": "hi", "prompt_cache": {}})
+        params = fake_client.asend_prompt.call_args.kwargs["other_params"]
+        assert params.prompt_cache.retention is AIPromptCacheRetention.DEFAULT
+
+    def test_no_cache_request_sends_no_hint(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        client.post(PATH, json={"engine": "claude", "prompt": "hi"})
+        assert fake_client.asend_prompt.call_args.kwargs["other_params"] is None
+
+    def test_the_hint_travels_on_the_streaming_path(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        fake_client.send_prompt_streaming = MagicMock(return_value=iter(["x"]))
+        client.post(
+            PATH,
+            json={
+                "engine": "claude",
+                "prompt": "hi",
+                "stream": True,
+                "prompt_cache": {"retention": "default"},
+            },
+        )
+        params = fake_client.send_prompt_streaming.call_args.kwargs["other_params"]
+        assert params.prompt_cache.retention is AIPromptCacheRetention.DEFAULT
+
+    def test_an_unknown_retention_is_422(
+        self, client: TestClient, pooled: MagicMock
+    ) -> None:
+        response = client.post(
+            PATH,
+            json={
+                "engine": "claude",
+                "prompt": "hi",
+                "prompt_cache": {"retention": "forever"},
+            },
+        )
         assert response.status_code == 422
         pooled.assert_not_called()
 

@@ -107,6 +107,30 @@ class TestSubmit:
         assert [i.custom_id for i in items] == ["a", "b"]
         assert [i.prompt for i in items] == ["first", "second"]
 
+    def test_a_cache_request_travels_on_its_item(self, client: TestClient) -> None:
+        fake = MagicMock()
+        fake.submit_batch = MagicMock(return_value=_job())
+        with _pooled(fake):
+            client.post(
+                "/v1/batches",
+                json={
+                    "engine": "claude",
+                    "requests": [
+                        {
+                            "custom_id": "a",
+                            "prompt": "first",
+                            "system_prompt": "shared",
+                            "prompt_cache": {"retention": "extended"},
+                        },
+                        {"custom_id": "b", "prompt": "second"},
+                    ],
+                },
+            )
+
+        (items,), _ = fake.submit_batch.call_args
+        assert items[0].prompt_cache.retention.value == "extended"
+        assert items[1].prompt_cache is None
+
     def test_timestamps_serialize_as_iso_strings(self, client: TestClient) -> None:
         fake = MagicMock()
         fake.submit_batch = MagicMock(return_value=_job())
@@ -209,6 +233,34 @@ class TestPollAndCollect:
         succeeded = body["results"][0]
         assert succeeded["text"] == "second answer"
         assert succeeded["usage"]["input_tokens"] == 10
+
+    def test_results_report_cache_reads_and_writes(self, client: TestClient) -> None:
+        # A cached Anthropic batch bills its reads below the input rate and its
+        # writes above it, so a caller pricing the batch needs both.
+        fake = MagicMock()
+        fake.get_batch_results = MagicMock(
+            return_value=[
+                SimpleNamespace(
+                    custom_id="a",
+                    status=SimpleNamespace(value="succeeded"),
+                    text="answer",
+                    error_message=None,
+                    provider_prompt_tokens=1200,
+                    provider_completion_tokens=40,
+                    provider_cached_input_tokens=1000,
+                    provider_cache_write_5m_tokens=0,
+                    provider_cache_write_1h_tokens=180,
+                    provider_metadata={},
+                )
+            ]
+        )
+        with _pooled(fake):
+            usage = client.get("/v1/batches/batch_abc123/results?engine=claude").json()[
+                "results"
+            ][0]["usage"]
+        assert usage["cached_input_tokens"] == 1000
+        assert usage["cache_write_5m_tokens"] == 0
+        assert usage["cache_write_1h_tokens"] == 180
 
     def test_a_failed_item_carries_its_reason_and_no_text(
         self, client: TestClient
