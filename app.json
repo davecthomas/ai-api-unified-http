@@ -22,6 +22,10 @@
       "description": "Default completions engine when a request omits one.",
       "value": "claude"
     },
+    "COMPLETIONS_FALLBACKS": {
+      "description": "Optional. Ordered engine:model pairs a request is retried on when its model is overloaded, rate limited, or out of quota, e.g. 'openai:gpt-5.6-luna,google-gemini'. Each needs its provider key above. Leave blank for no fallback.",
+      "required": false
+    },
     "HTTP_RATE_LIMIT": {
       "description": "Requests per key per window, per worker. Guards provider spend. 0 disables it.",
       "value": "60"

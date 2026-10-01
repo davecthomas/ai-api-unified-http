@@ -767,6 +767,12 @@ export interface components {
              * @description Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.
              */
             engine: string;
+            /**
+             * Fallback
+             * @description Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.
+             * @default true
+             */
+            fallback: boolean;
             /** Max Response Tokens */
             max_response_tokens?: number | null;
             /**
@@ -806,9 +812,15 @@ export interface components {
             engine: string;
             /**
              * Model
-             * @description Model requested, or null for the engine default.
+             * @description Model that served the request, or null for the engine default.
              */
             model?: string | null;
+            /**
+             * Served By Fallback
+             * @description True when the requested model failed and a fallback answered. `engine` and `model` then name the fallback, and `usd_cost` is priced at it.
+             * @default false
+             */
+            served_by_fallback: boolean;
             /**
              * Text
              * @description Generated completion text.
@@ -822,6 +834,12 @@ export interface components {
              * @description Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.
              */
             engine: string;
+            /**
+             * Fallback
+             * @description Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.
+             * @default true
+             */
+            fallback: boolean;
             /** Max Response Tokens */
             max_response_tokens?: number | null;
             /**
@@ -874,6 +892,12 @@ export interface components {
             finish_reason: string;
             /** Model */
             model?: string | null;
+            /**
+             * Served By Fallback
+             * @description True when the requested model failed and a fallback answered. `engine` and `model` then name the fallback, and `usd_cost` is priced at it.
+             * @default false
+             */
+            served_by_fallback: boolean;
             /** Text */
             text?: string | null;
             /** Tool Calls */
@@ -957,6 +981,11 @@ export interface components {
              * @description Machine-readable error code.
              */
             error: string;
+            /**
+             * Fallback Reason
+             * @description Why the provider failure might be served by another model: unavailable, rate_limited, quota_exhausted, or model_unavailable. Null when another model would fail the same way (a validation or authentication error, a timeout). On a deployment with a fallback chain, the failure is from the last model tried.
+             */
+            fallback_reason?: string | null;
             /**
              * Provider Status
              * @description HTTP status reported by the provider, when one was reported.
@@ -1224,6 +1253,12 @@ export interface components {
              * @description Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.
              */
             engine: string;
+            /**
+             * Fallback
+             * @description Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.
+             * @default true
+             */
+            fallback: boolean;
             /** Max Response Tokens */
             max_response_tokens?: number | null;
             /** Messages */
@@ -1281,6 +1316,12 @@ export interface components {
              * @description Model output before parsing, for diagnosing a null data field.
              */
             raw_text: string;
+            /**
+             * Served By Fallback
+             * @description True when the requested model failed and a fallback answered. `engine` and `model` then name the fallback, and `usd_cost` is priced at it.
+             * @default false
+             */
+            served_by_fallback: boolean;
             usage: components["schemas"]["TokenUsage"];
             /**
              * Usd Cost

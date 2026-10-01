@@ -466,6 +466,12 @@
             "title": "Engine",
             "type": "string"
           },
+          "fallback": {
+            "default": true,
+            "description": "Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.",
+            "title": "Fallback",
+            "type": "boolean"
+          },
           "max_response_tokens": {
             "anyOf": [
               {
@@ -559,8 +565,14 @@
                 "type": "null"
               }
             ],
-            "description": "Model requested, or null for the engine default.",
+            "description": "Model that served the request, or null for the engine default.",
             "title": "Model"
+          },
+          "served_by_fallback": {
+            "default": false,
+            "description": "True when the requested model failed and a fallback answered. `engine` and `model` then name the fallback, and `usd_cost` is priced at it.",
+            "title": "Served By Fallback",
+            "type": "boolean"
           },
           "text": {
             "description": "Generated completion text.",
@@ -581,6 +593,12 @@
             "description": "Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.",
             "title": "Engine",
             "type": "string"
+          },
+          "fallback": {
+            "default": true,
+            "description": "Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.",
+            "title": "Fallback",
+            "type": "boolean"
           },
           "max_response_tokens": {
             "anyOf": [
@@ -711,6 +729,12 @@
               }
             ],
             "title": "Model"
+          },
+          "served_by_fallback": {
+            "default": false,
+            "description": "True when the requested model failed and a fallback answered. `engine` and `model` then name the fallback, and `usd_cost` is priced at it.",
+            "title": "Served By Fallback",
+            "type": "boolean"
           },
           "text": {
             "anyOf": [
@@ -891,6 +915,18 @@
             "description": "Machine-readable error code.",
             "title": "Error",
             "type": "string"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the provider failure might be served by another model: unavailable, rate_limited, quota_exhausted, or model_unavailable. Null when another model would fail the same way (a validation or authentication error, a timeout). On a deployment with a fallback chain, the failure is from the last model tried.",
+            "title": "Fallback Reason"
           },
           "provider_status": {
             "anyOf": [
@@ -1437,6 +1473,12 @@
             "title": "Engine",
             "type": "string"
           },
+          "fallback": {
+            "default": true,
+            "description": "Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.",
+            "title": "Fallback",
+            "type": "boolean"
+          },
           "max_response_tokens": {
             "anyOf": [
               {
@@ -1576,6 +1618,12 @@
             "description": "Model output before parsing, for diagnosing a null data field.",
             "title": "Raw Text",
             "type": "string"
+          },
+          "served_by_fallback": {
+            "default": false,
+            "description": "True when the requested model failed and a fallback answered. `engine` and `model` then name the fallback, and `usd_cost` is priced at it.",
+            "title": "Served By Fallback",
+            "type": "boolean"
           },
           "usage": {
             "$ref": "#/components/schemas/TokenUsage"
@@ -2216,7 +2264,7 @@
   "info": {
     "description": "HTTP interface to the ai-api-unified Python library. Breaking API changes bump the URI version (/v1 -> /v2); the service itself follows semantic versioning independently.",
     "title": "ai-api-unified-http",
-    "version": "1.10.0"
+    "version": "1.11.0"
   },
   "openapi": "3.1.0",
   "paths": {

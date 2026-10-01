@@ -54,19 +54,20 @@ class TestBuffered:
             "text": "generated text",
             "engine": "claude",
             "model": "claude-opus-5",
+            "served_by_fallback": False,
         }
 
     def test_pool_is_keyed_on_the_requested_engine_and_model(
         self, client: TestClient, pooled: MagicMock
     ) -> None:
         client.post(PATH, json={"engine": "openai", "model": "gpt-5.4", "prompt": "hi"})
-        pooled.assert_called_once_with("openai", "gpt-5.4")
+        pooled.assert_called_once_with("openai", "gpt-5.4", fallback=True)
 
     def test_omitted_model_reaches_the_pool_as_none(
         self, client: TestClient, pooled: MagicMock
     ) -> None:
         client.post(PATH, json={"engine": "openai", "prompt": "hi"})
-        pooled.assert_called_once_with("openai", None)
+        pooled.assert_called_once_with("openai", None, fallback=True)
 
     def test_generation_options_are_forwarded(
         self, client: TestClient, pooled: MagicMock, fake_client: MagicMock

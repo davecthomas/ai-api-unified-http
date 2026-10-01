@@ -27,6 +27,7 @@ from .cost import (
     verify_cost_capture,
 )
 from .errors import EXCEPTION_HANDLERS, ErrorEnvelopeMiddleware
+from .fallback import install_route_filter, verify_fallback_config
 from .logging_setup import configure_logging
 from .rate_limit import RateLimitMiddleware, rate_limit, window_seconds
 from .request_limits import RequestSizeLimitMiddleware, max_request_bytes
@@ -81,6 +82,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     attach_cost_handler()
     verify_cost_capture()
     verify_auth_configured()
+
+    # The route filter reports which model served a request when a fallback
+    # answered; the check refuses a chain naming an engine that does not exist.
+    install_route_filter()
+    verify_fallback_config()
 
     limit: int = rate_limit()
     if limit:
