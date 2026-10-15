@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.11.0
+# ai-api-unified-http 1.12.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -411,26 +411,52 @@ the system prompt defeats it. Whether a call hit shows in
 ### Model fallback
 
 A deployment can name backup models, tried in order when the requested one
-cannot serve a request because it is overloaded, rate limited past the
-library's backoff, or out of quota. The chain is the library's (ai-api-unified
-2.32.1), configured with the library's own settings:
+cannot serve a request. The chain is the library's (ai-api-unified 2.35.0),
+configured with the library's own settings:
 
 ```bash
 # Ordered engine:model pairs. Each engine needs its own provider key.
-COMPLETIONS_FALLBACKS=openai:gpt-5.6-luna,google-gemini:gemini-3.7-flash
+COMPLETIONS_FALLBACKS=claude:claude-sonnet-5,openai:gpt-5.6-luna,google-gemini
 # Optional. Which failures move a request on; this is the default.
-COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted
+COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted,auth_rejected
 ```
 
-The chain sits behind whatever engine a request names, so a caller asking for
-`claude` is served by OpenAI only when Claude fails in one of those ways. A
-pair naming the requested model itself is skipped. Validation errors,
-authentication failures, timeouts, and refusals never fail over, and neither
-does an unknown model id unless `model_unavailable` is added to
-`COMPLETIONS_FALLBACK_ON` (it is off by default because it usually means a
-typo that a working fallback would hide). The service refuses to start if the
-chain names an engine that does not exist, so a typo surfaces at deploy time
-rather than during an outage.
+The chain sits behind whatever engine a request names, and a pair naming the
+requested model itself is skipped. The service refuses to start if the chain
+names an engine or a reason that does not exist, so a typo surfaces at deploy
+time rather than during an outage.
+
+| Reason | Fails over by default | Typical causes |
+|---|---|---|
+| `unavailable` | yes | 5xx, Anthropic 529 overloaded, a failed connection |
+| `rate_limited` | yes | 429 after the provider's own backoff ran out |
+| `quota_exhausted` | yes | out of credit or quota, an Anthropic workspace spend cap, OpenAI `billing_hard_limit_reached` |
+| `auth_rejected` | yes | 401/403, a revoked key, a disabled organization, expired AWS credentials |
+| `model_unavailable` | no | 404, an unknown or retired model id |
+| `timeout` | no | the request's `request_timeout_seconds` passed with no answer |
+
+Validation errors and refusals never fail over. `model_unavailable` is off
+because an unknown model id usually means a typo that a working fallback would
+hide. `auth_rejected` is on because a revoked key otherwise takes a provider
+out entirely; the library logs every failover, so a rejected key still shows
+up while traffic keeps flowing. Leave it out of `COMPLETIONS_FALLBACK_ON` to
+make a bad key fail loudly instead.
+
+**Same account.** After a spend cap or a rejected key, the provider's other
+models would fail the same way, so the chain skips the rest of that account
+and goes to the next provider. Per-model limits (a Gemini daily quota, Bedrock
+model access) keep the account's other models in play. The error body's
+`account_wide` says which kind a failure was.
+
+**Timeouts.** `timeout` is off by default because the deadline is yours, and
+each candidate adds its own wait. To treat a provider that hangs as an outage,
+add `timeout` to `COMPLETIONS_FALLBACK_ON`, then send a short
+`request_timeout_seconds` with `"retry_policy": "none"`. Without the latter,
+the Anthropic and OpenAI SDKs retry a timeout twice before the chain sees it.
+`retry_policy` is accepted on `/v1/structured` and `/v1/conversations/turn`.
+The library offers no per-call setting for a plain text prompt, so for
+`/v1/completions` set `COMPLETIONS_RETRY_POLICY=none` on the deployment. A
+timeout that reaches the caller is a 504 `provider_timeout`.
 
 `/v1/completions` (buffered and streamed), `/v1/structured`, and
 `/v1/conversations/turn` take part. Responses name the model that actually
@@ -443,18 +469,19 @@ answered:
 
 A stream reports the same three fields in its `done` event, and it fails over
 only before its first chunk. `usd_cost` is priced at the model that answered.
-When every model fails, the error body carries the last one's `engine` and a
-`fallback_reason` (`unavailable`, `rate_limited`, `quota_exhausted`,
-`model_unavailable`, or null when no other model would have done better).
+When every model fails, the error body carries the last one's `engine`, its
+`fallback_reason`, and `account_wide`.
 
 Send `"fallback": false` on a request when only the requested model will do.
 Batches, token counts, and the model catalogue always use the requested
 engine.
 
 **Conversations.** A turn that failed over returns a `conversation_token` in
-the fallback's shape, and the library sends later turns carrying it back to
-the engine that shaped it, whatever engine the request names. Keep sending
-the engine you asked for; `engine` in each response tells you which served.
+the fallback's shape. Keep sending the engine you asked for; `engine` in each
+response tells you which served. While the history is plain text, a turn can
+go to any model in the chain. Once it holds a provider's own content, such as
+a tool call, only that provider's models can read it: a turn then fails over
+among that provider's models in the chain (Opus to Sonnet) and skips the rest.
 
 Every failover is logged by the library at ERROR (`FALLBACK: ...`), and each
 request a fallback served at WARNING (`FALLBACK SERVED: ...`), with structured

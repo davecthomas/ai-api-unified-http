@@ -16,7 +16,7 @@ and the result stamps the service reads are the ones the library produces.
 import asyncio
 import json
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from ai_api_unified import (
@@ -453,3 +453,147 @@ class TestTypedResults:
         # The request named no model, and the response says the same.
         assert (body["engine"], body["model"]) == ("claude", None)
         assert body["served_by_fallback"] is False
+
+
+def _chain_of(*candidates: tuple[str, _Engine]) -> AiFallbackCompletions:
+    """The library's wrapper over (engine token, engine) pairs, in order."""
+    by_label = {f"{engine}:{client.model}": client for engine, client in candidates}
+    (primary_engine, primary), *rest = candidates
+    return AiFallbackCompletions(
+        primary=primary,
+        primary_candidate=AIFallbackCandidate(
+            engine=primary_engine, model=str(primary.model)
+        ),
+        fallback_candidates=[
+            AIFallbackCandidate(engine=engine, model=str(client.model))
+            for engine, client in rest
+        ],
+        client_builder=lambda candidate: by_label[candidate.label],
+    )
+
+
+class TestLibrary235:
+    """What 2.33 to 2.35 changed, as the service's callers see it."""
+
+    def test_a_tool_turn_fails_over_within_the_provider(
+        self, client: TestClient
+    ) -> None:
+        # 2.35.0: history holding Claude content blocks used to pin the turn
+        # to the primary, so an overloaded Opus failed it. Sonnet reads the
+        # same blocks, so the turn now goes there, and never to OpenAI.
+        mini = _Engine("mini", family="openai")
+        wrapper = _chain_of(
+            ("claude", _Engine("opus", fail=_overloaded())),
+            ("claude", _Engine("sonnet")),
+            ("openai", mini),
+        )
+        plain = {("claude", "sonnet"): _priced("sonnet", "3")}
+        claude_shaped = [
+            {"role": "user", "content": "look it up"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "f", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "42"}
+                ],
+            },
+        ]
+        with _route_pool(wrapper, plain):
+            body = client.post(
+                "/v1/conversations/turn",
+                json={
+                    "engine": "claude",
+                    "model": "opus",
+                    "system_prompt": "s",
+                    "messages": claude_shaped,
+                },
+            ).json()
+
+        assert body["text"] == "sonnet:turn"
+        assert (body["engine"], body["model"]) == ("claude", "sonnet")
+        assert body["served_by_fallback"] is True
+        # 10 input tokens at $3 per million: priced at Sonnet, not Opus.
+        assert body["usd_cost"] == "0.00003"
+
+    @pytest.mark.parametrize("path", ["/v1/structured", "/v1/conversations/turn"])
+    def test_retry_policy_reaches_the_engine_as_a_provider_option(
+        self, client: TestClient, path: str
+    ) -> None:
+        fake = MagicMock()
+        fake.asend_structured_output = AsyncMock(
+            return_value=AIStructuredOutputResult(
+                data={}, finish_reason=AIFinishReason.COMPLETE, raw_text="{}"
+            )
+        )
+        fake.asend_conversation = AsyncMock(
+            return_value=AITurnResult(finish_reason=AIFinishReason.COMPLETE)
+        )
+        body: dict[str, Any] = {
+            "engine": "claude",
+            "retry_policy": "none",
+            "request_timeout_seconds": 5,
+        }
+        if path == "/v1/structured":
+            body |= {"prompt": "x", "response_schema": {}}
+            method = fake.asend_structured_output
+        else:
+            body |= {"system_prompt": "s", "messages": []}
+            method = fake.asend_conversation
+        with patch(
+            "ai_api_unified_http.routes_v1.get_completions_client", return_value=fake
+        ):
+            assert client.post(path, json=body).status_code == 200
+
+        kwargs = method.call_args.kwargs
+        assert kwargs["provider_options"] == {"retry_policy": "none"}
+        assert kwargs["request_timeout_seconds"] == 5
+
+    def test_no_retry_policy_sends_no_provider_options(
+        self, client: TestClient
+    ) -> None:
+        fake = MagicMock()
+        fake.asend_conversation = AsyncMock(
+            return_value=AITurnResult(finish_reason=AIFinishReason.COMPLETE)
+        )
+        with patch(
+            "ai_api_unified_http.routes_v1.get_completions_client", return_value=fake
+        ):
+            client.post(
+                "/v1/conversations/turn",
+                json={"engine": "claude", "system_prompt": "s", "messages": []},
+            )
+        assert fake.asend_conversation.call_args.kwargs["provider_options"] is None
+
+    def test_an_unknown_retry_policy_is_refused(self, client: TestClient) -> None:
+        response = client.post(
+            "/v1/conversations/turn",
+            json={
+                "engine": "claude",
+                "system_prompt": "s",
+                "messages": [],
+                "retry_policy": "aggressive",
+            },
+        )
+        assert response.status_code == 422
+
+    def test_a_timeout_that_exhausts_the_chain_is_a_504(
+        self, client: TestClient
+    ) -> None:
+        timed_out = AiProviderRequestError(
+            "read timed out",
+            provider_engine="openai",
+            fallback_reason=AiFallbackReason.TIMEOUT,
+        )
+        wrapper = _chain(
+            _Engine("opus", fail=_overloaded()), _Engine("mini", fail=timed_out)
+        )
+        with _route_pool(wrapper, {}):
+            response = client.post(PATH, json={"engine": "claude", "prompt": "hi"})
+
+        assert response.status_code == 504
+        body = response.json()
+        assert body["error"] == "provider_timeout"
+        assert body["fallback_reason"] == "timeout"

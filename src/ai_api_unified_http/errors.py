@@ -24,6 +24,7 @@ import uuid
 from typing import Final
 
 from ai_api_unified import (
+    AiFallbackReason,
     AiProviderCapabilityUnsupportedError,
     AiProviderRequestError,
     StructuredResponseTokenLimitError,
@@ -75,6 +76,7 @@ _RATE_LIMITED: Final[int] = 429
 # describe a service misconfiguration and must not read as the caller's error.
 _PROVIDER_AUTH_STATUSES: Final[frozenset[int]] = frozenset({401, 403})
 _BAD_GATEWAY: Final[int] = 502
+_GATEWAY_TIMEOUT: Final[int] = 504
 
 
 def _classify_provider_status(provider_status: int | None) -> tuple[int, str]:
@@ -104,7 +106,15 @@ def _classify_provider_status(provider_status: int | None) -> tuple[int, str]:
 
 
 def _status_for_request_error(error: AiProviderRequestError) -> tuple[int, str]:
-    """Classify a library provider failure, which carries the provider's status."""
+    """Classify a library provider failure, which carries the provider's status.
+
+    A call that ran out of time has no status, like a refused connection, but
+    from library 2.34.0 it says so in `fallback_reason`. It is answered with
+    504 so a caller can tell "the provider is slow" from "the provider is
+    down" and decide for itself whether a longer deadline would help.
+    """
+    if error.status_code is None and error.fallback_reason is AiFallbackReason.TIMEOUT:
+        return _GATEWAY_TIMEOUT, "provider_timeout"
     return _classify_provider_status(error.status_code)
 
 
@@ -142,6 +152,7 @@ def _error_response(
     engine: str | None = None,
     provider_status: int | None = None,
     fallback_reason: str | None = None,
+    account_wide: bool | None = None,
 ) -> JSONResponse:
     """Build the uniform error body shared by every failure path."""
     body = ErrorResponse(
@@ -150,6 +161,7 @@ def _error_response(
         engine=engine,
         provider_status=provider_status,
         fallback_reason=fallback_reason,
+        account_wide=account_wide,
     )
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
@@ -184,6 +196,9 @@ async def handle_provider_request_error(
         engine=exc.provider_engine,
         provider_status=exc.status_code,
         fallback_reason=reason.value if reason else None,
+        # Only meaningful alongside a reason; with none it would read as a
+        # claim about the account that the library never made.
+        account_wide=exc.account_wide if reason else None,
     )
 
 
