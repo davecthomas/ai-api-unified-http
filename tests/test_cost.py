@@ -34,17 +34,31 @@ def isolated_topic(
     logging.getLogger(topic).handlers.clear()
 
 
-def _write_profile(tmp_path: Path, *, observability: bool, emit_cost: bool) -> str:
-    """Write a middleware profile and return its path."""
-    entries: list[str] = []
+def _write_config(tmp_path: Path, *, observability: bool, emit_cost: bool) -> str:
+    """Write a models.json holding only a middleware section; return its path."""
+    entries: list[dict[str, object]] = []
     if observability:
         entries.append(
-            "  - name: observability\n"
-            "    enabled: true\n"
-            "    settings:\n"
-            f"      emit_cost: {str(emit_cost).lower()}\n"
+            {
+                "name": "observability",
+                "enabled": True,
+                "settings": {"emit_cost": emit_cost},
+            }
         )
-    body = "middleware:\n" + ("".join(entries) if entries else "  []\n")
+    path = tmp_path / "models.json"
+    path.write_text(json.dumps({"middleware": entries}), encoding="utf-8")
+    return str(path)
+
+
+def _write_yaml_profile(tmp_path: Path, *, emit_cost: bool) -> str:
+    """Write the pre-3.11 middleware YAML and return its path."""
+    body = (
+        "middleware:\n"
+        "  - name: observability\n"
+        "    enabled: true\n"
+        "    settings:\n"
+        f"      emit_cost: {str(emit_cost).lower()}\n"
+    )
     path = tmp_path / "middleware.yaml"
     path.write_text(body, encoding="utf-8")
     return str(path)
@@ -61,8 +75,8 @@ class TestVerifyCostCapture:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv(
-            cost.MIDDLEWARE_CONFIG_PATH_ENV,
-            _write_profile(tmp_path, observability=False, emit_cost=False),
+            cost.MODELS_CONFIG_ENV,
+            _write_config(tmp_path, observability=False, emit_cost=False),
         )
         cost.attach_cost_handler()
         with pytest.raises(cost.CostEventNotCapturedError) as caught:
@@ -75,13 +89,29 @@ class TestVerifyCostCapture:
         # The library default. A handler is attached and listening, and still
         # nothing is ever recorded.
         monkeypatch.setenv(
-            cost.MIDDLEWARE_CONFIG_PATH_ENV,
-            _write_profile(tmp_path, observability=True, emit_cost=False),
+            cost.MODELS_CONFIG_ENV,
+            _write_config(tmp_path, observability=True, emit_cost=False),
         )
         cost.attach_cost_handler()
         with pytest.raises(cost.CostEventNotCapturedError) as caught:
             cost.verify_cost_capture()
         assert "emit_cost" in str(caught.value)
+
+    def test_a_middleware_yaml_still_wins_over_the_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The library deprecated AI_MIDDLEWARE_CONFIG_PATH in 3.11.0 but keeps
+        # honouring it over the file's middleware section. A deployment that
+        # still names a YAML must be checked against the YAML, since that is
+        # what the library is reading, or the check would pass on the shipped
+        # file while the YAML emits nothing.
+        yaml_path = _write_yaml_profile(tmp_path, emit_cost=False)
+        monkeypatch.setenv(cost.MIDDLEWARE_CONFIG_PATH_ENV, yaml_path)
+        cost.attach_cost_handler()
+        with pytest.raises(cost.CostEventNotCapturedError) as caught:
+            cost.verify_cost_capture()
+        assert "emit_cost" in str(caught.value)
+        assert yaml_path in str(caught.value)
 
     def test_fails_when_nothing_is_listening(self) -> None:
         # Profile is fine (conftest points at the shipped one); no handler.
@@ -94,32 +124,40 @@ class TestVerifyCostCapture:
         cost.verify_cost_capture()
 
     def test_shipped_profile_enables_cost_emission(self) -> None:
-        # Guards the config file itself: if config/middleware.yaml ever loses
-        # emit_cost, this fails rather than the service silently under-recording.
+        # Guards the config file itself: if config/models.json ever loses
+        # emit_cost from its middleware section, this fails rather than the
+        # service silently under-recording.
         settings = cost._resolved_observability_settings()
         assert settings is not None
         assert settings.emit_cost is True
 
 
-class TestMiddlewareDefault:
+class TestModelsConfigDefault:
     def test_default_is_applied_when_unset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv(cost.MIDDLEWARE_CONFIG_PATH_ENV, raising=False)
+        monkeypatch.delenv(cost.MODELS_CONFIG_ENV, raising=False)
         monkeypatch.chdir(Path(__file__).resolve().parent.parent)
-        cost.apply_default_middleware_config()
-        assert (
-            cost.DEFAULT_MIDDLEWARE_CONFIG_PATH
-            in os.environ[cost.MIDDLEWARE_CONFIG_PATH_ENV]
-        )
+        cost.apply_default_models_config()
+        assert cost.DEFAULT_MODELS_CONFIG_PATH in os.environ[cost.MODELS_CONFIG_ENV]
 
-    def test_an_operator_supplied_profile_is_not_overridden(
+    def test_an_operator_supplied_file_is_not_overridden(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        chosen = _write_profile(tmp_path, observability=True, emit_cost=True)
-        monkeypatch.setenv(cost.MIDDLEWARE_CONFIG_PATH_ENV, chosen)
-        cost.apply_default_middleware_config()
-        assert os.environ[cost.MIDDLEWARE_CONFIG_PATH_ENV] == chosen
+        chosen = _write_config(tmp_path, observability=True, emit_cost=True)
+        monkeypatch.setenv(cost.MODELS_CONFIG_ENV, chosen)
+        cost.apply_default_models_config()
+        assert os.environ[cost.MODELS_CONFIG_ENV] == chosen
+
+    def test_a_blank_value_turns_the_file_off_and_is_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Blank is the library's way of running without a file. Filling it
+        # in would override a deliberate choice.
+        monkeypatch.setenv(cost.MODELS_CONFIG_ENV, "")
+        monkeypatch.chdir(Path(__file__).resolve().parent.parent)
+        cost.apply_default_models_config()
+        assert os.environ[cost.MODELS_CONFIG_ENV] == ""
 
 
 def test_events_land_as_json_lines(tmp_path: Path) -> None:

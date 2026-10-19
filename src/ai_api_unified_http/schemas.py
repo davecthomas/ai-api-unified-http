@@ -146,18 +146,33 @@ PROMPT_CACHE_DESCRIPTION: Final[str] = (
 
 FALLBACK_DESCRIPTION: Final[str] = (
     "Whether the request may be retried on the deployment's fallback chain "
-    "(COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate "
-    "limited past its backoff, or out of quota. Set false when only the "
-    "requested model will do. Has no effect on a deployment with no chain."
+    "(completions.fallbacks in models.json) when the requested model is "
+    "overloaded, rate limited past its backoff, or out of quota. Set false "
+    "when only the requested model will do. Has no effect on a deployment "
+    "with no chain. A candidate that failed recently is resting, and a "
+    "request during its rest starts on the next candidate without asking it."
 )
 
 RETRY_POLICY_DESCRIPTION: Final[str] = (
     "'none' sends one attempt per model instead of the provider's own retry "
     "schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a "
     "timeout twice). Pair it with a short request_timeout_seconds on a "
-    "deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung "
+    "deployment whose completions.fallback_on includes 'timeout', so a hung "
     "model fails over in seconds rather than after three full deadlines. "
-    "Omit it for the deployment's COMPLETIONS_RETRY_POLICY."
+    "Omit it for the deployment's completions.retry_policy."
+)
+
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "max"]
+
+THINKING_DESCRIPTION: Final[str] = (
+    "How much the model thinks before answering, as one provider-neutral "
+    "level the library maps onto each provider's own control (Anthropic "
+    "effort, OpenAI reasoning_effort, Gemini thinking_level or budget). "
+    "Omit it for the deployment's level, completions.thinking in "
+    "models.json, which is 'medium' unless changed: thinking is on by "
+    "default, and it adds output tokens, latency, and cost. 'off' turns it "
+    "off where the model allows. A model that cannot honor a level exactly "
+    "applies the nearest one it supports."
 )
 
 SERVED_BY_FALLBACK_DESCRIPTION: Final[str] = (
@@ -186,31 +201,14 @@ class CompletionRequest(EngineSelection):
     prompt_cache: PromptCache | None = Field(
         default=None, description=PROMPT_CACHE_DESCRIPTION
     )
+    thinking: ThinkingLevel | None = Field(
+        default=None, description=THINKING_DESCRIPTION
+    )
     fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
     stream: bool = Field(
         default=False,
         description="When true the response is text/event-stream (SSE). "
         "Streaming responses bypass PII redaction middleware by library design.",
-    )
-
-
-class CompletionResponse(BaseModel):
-    """Buffered completion result.
-
-    Text only, because `asend_prompt` returns a bare `str`. Token usage and a
-    finish reason would require routing this through the conversation call
-    instead, which is a different provider path than the endpoint documents.
-    `/v1/conversations/turn` and `/v1/structured` return both natively.
-    """
-
-    text: str = Field(description="Generated completion text.")
-    engine: str = Field(description="Engine that served the request.")
-    model: str | None = Field(
-        default=None,
-        description=("Model that served the request, or null for the engine default."),
-    )
-    served_by_fallback: bool = Field(
-        default=False, description=SERVED_BY_FALLBACK_DESCRIPTION
     )
 
 
@@ -227,6 +225,9 @@ class StructuredRequest(EngineSelection):
     request_timeout_seconds: float | None = None
     prompt_cache: PromptCache | None = Field(
         default=None, description=PROMPT_CACHE_DESCRIPTION
+    )
+    thinking: ThinkingLevel | None = Field(
+        default=None, description=THINKING_DESCRIPTION
     )
     fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
     retry_policy: Literal["default", "none"] | None = Field(
@@ -267,6 +268,31 @@ class TokenUsage(BaseModel):
         description="Tokens written to a one-hour cache, billed further above it.",
     )
     total_tokens: int | None = None
+
+
+class CompletionResponse(BaseModel):
+    """Buffered completion result.
+
+    Sent with the library's `asend_prompt_with_result`, whose envelope says
+    which engine and model answered and what the call used, so this response
+    carries usage and cost like `/v1/structured` and `/v1/conversations/turn`.
+    There is no finish reason: the text call does not report one.
+    """
+
+    text: str = Field(description="Generated completion text.")
+    engine: str = Field(description="Engine that served the request.")
+    model: str | None = Field(
+        default=None,
+        description=("Model that served the request, or null for the engine default."),
+    )
+    served_by_fallback: bool = Field(
+        default=False, description=SERVED_BY_FALLBACK_DESCRIPTION
+    )
+    usage: TokenUsage = Field(
+        default_factory=TokenUsage,
+        description="Token counts of the call that answered.",
+    )
+    usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
 
 
 class StructuredResponse(BaseModel):
@@ -376,6 +402,9 @@ class ConversationTurnRequest(EngineSelection):
     request_timeout_seconds: float | None = None
     prompt_cache: PromptCache | None = Field(
         default=None, description=PROMPT_CACHE_DESCRIPTION
+    )
+    thinking: ThinkingLevel | None = Field(
+        default=None, description=THINKING_DESCRIPTION
     )
     fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
     retry_policy: Literal["default", "none"] | None = Field(

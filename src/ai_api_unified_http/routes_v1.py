@@ -27,7 +27,9 @@ from ai_api_unified import (
     AIFactory,
     AIPromptCacheHint,
     AIPromptCacheRetention,
+    AIPromptResult,
     AiProviderCapabilityUnsupportedError,
+    AIThinkingLevel,
     AITool,
     SupportedDataType,
     get_model_info,
@@ -64,7 +66,7 @@ from .conversation_token import (
     replay_messages,
 )
 from .delivery import artifact_response, not_found
-from .fallback import ServedRoute, served_route, start_route_tracking
+from .fallback import ServedRoute, served_route_of_report, served_route_of_result
 from .jobs import run_video_job
 from .schemas import (
     MAX_VOICES_RETURNED,
@@ -266,7 +268,12 @@ def _prompt_params(
         HTTPException: 400 when the library refuses the attachments.
     """
     attachments: list[Attachment] = request.attachments or []
-    if not attachments and not request.system_prompt and not request.prompt_cache:
+    if (
+        not attachments
+        and not request.system_prompt
+        and not request.prompt_cache
+        and request.thinking is None
+    ):
         return None
 
     types: list[Any] = []
@@ -285,6 +292,7 @@ def _prompt_params(
             included_data=blobs or None,
             included_mime_types=mimes or None,
             prompt_cache=_cache_hint(request.prompt_cache),
+            thinking=_thinking_level(request.thinking),
         )
     except ValueError as error:
         # The library's validator refuses a type this call cannot take, empty
@@ -362,51 +370,34 @@ def _usd_cost(client: Any, usage: Any) -> str | None:
     return str(cost)
 
 
-def _route_of_result(
-    client: Any, engine: str, model: str | None, result: Any
-) -> ServedRoute:
-    """Read which model served a conversation turn or structured call.
+def _thinking_level(level: str | None) -> AIThinkingLevel | None:
+    """Convert a request's thinking level into the library's enum.
 
-    A fallback client stamps every such result with the engine and model that
-    served it. That stamp, not the fallback log event, is what these calls
-    read: once a conversation's history is engine-shaped the library pins the
-    turn to that engine without failing over, so a turn can be served by a
-    fallback with no event logged for it.
-
-    Args:
-        client: The pooled client the route called.
-        engine: The requested engine.
-        model: The requested model, or None for the engine default.
-        result: The library's `AITurnResult` or `AIStructuredOutputResult`.
-
-    Returns:
-        ServedRoute: The requested engine and model when the primary served,
-            else the stamped fallback.
+    None means the request named no level, and the library then applies the
+    deployment's `completions.thinking`. The schema already restricted the
+    string to the library's six values, so the conversion cannot fail.
     """
-    served_engine: str | None = getattr(result, "provider_engine", None)
-    if not served_engine:
-        # A plain engine client leaves the stamp empty: it served the call.
-        return ServedRoute(engine=engine, model=model)
-    served_model: str | None = getattr(result, "model_name", None)
-    primary_model: str | None = getattr(
-        getattr(client, "primary", None), "model_name", None
-    )
-    if served_engine == engine.strip().lower() and served_model == primary_model:
-        return ServedRoute(engine=engine, model=model)
-    return ServedRoute(
-        engine=served_engine, model=served_model or None, served_by_fallback=True
-    )
+    if level is None:
+        return None
+    return AIThinkingLevel(level)
 
 
-def _provider_options(retry_policy: str | None) -> dict[str, Any] | None:
+def _provider_options(
+    retry_policy: str | None, thinking: str | None = None
+) -> dict[str, Any] | None:
     """Build the per-call provider options a request asked for.
 
-    `retry_policy` is the library's reserved option key: every engine reads
-    it for that call and none forwards it to the provider.
+    Both keys are reserved by the library: every engine reads them for that
+    call, and neither is forwarded to the provider. `thinking_level` is the
+    conversation and structured calls' form of the per-call level that a
+    text prompt carries on its params object.
     """
-    if retry_policy is None:
-        return None
-    return {"retry_policy": retry_policy}
+    options: dict[str, Any] = {}
+    if retry_policy is not None:
+        options["retry_policy"] = retry_policy
+    if thinking is not None:
+        options["thinking_level"] = thinking
+    return options or None
 
 
 def _pricing_client(client: Any, route: ServedRoute) -> Any:
@@ -717,9 +708,6 @@ async def completions(
     client = get_completions_client(
         request.engine, request.model, fallback=request.fallback
     )
-    # A text prompt returns a bare string, so which model served it is read
-    # from the library's fallback event for this request (see fallback.py).
-    collector = start_route_tracking()
 
     # Both call paths take the same parameters object, so attachments work on
     # a stream exactly as they do on a buffered call.
@@ -737,25 +725,35 @@ async def completions(
                 chunks,
                 request.engine,
                 request.model,
-                route=lambda: served_route(collector, request.engine, request.model),
+                # Which model served a stream is known only once it ends,
+                # from the request cost scope the bridge opens around it.
+                route=lambda report: served_route_of_report(
+                    client, request.engine, request.model, report
+                ),
             ),
             media_type=SSE_MEDIA_TYPE,
             headers=SSE_HEADERS,
         )
 
-    text: str = await client.asend_prompt(
+    # The envelope says which engine and model answered, which a chain fills
+    # per call: a resting primary skipped without failing is reported too.
+    result: AIPromptResult = await client.asend_prompt_with_result(
         request.prompt,
         system_prompt=request.system_prompt,
         max_response_tokens=request.max_response_tokens,
         request_timeout_seconds=request.request_timeout_seconds,
         other_params=params,
     )
-    route: ServedRoute = served_route(collector, request.engine, request.model)
+    route: ServedRoute = served_route_of_result(
+        client, request.engine, request.model, result
+    )
     return CompletionResponse(
-        text=text,
+        text=result.text,
         engine=route.engine,
         model=route.model,
         served_by_fallback=route.served_by_fallback,
+        usage=_usage(result.usage),
+        usd_cost=_usd_cost(_pricing_client(client, route), result.usage),
     )
 
 
@@ -796,9 +794,11 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
         **_optional(max_response_tokens=request.max_response_tokens),
         request_timeout_seconds=request.request_timeout_seconds,
         prompt_cache=_cache_hint(request.prompt_cache),
-        provider_options=_provider_options(request.retry_policy),
+        provider_options=_provider_options(request.retry_policy, request.thinking),
     )
-    route: ServedRoute = _route_of_result(client, request.engine, request.model, result)
+    route: ServedRoute = served_route_of_result(
+        client, request.engine, request.model, result
+    )
     return StructuredResponse(
         data=result.data,
         finish_reason=result.finish_reason.value,
@@ -852,7 +852,7 @@ async def conversation_turn(
             max_response_tokens=request.max_response_tokens,
             request_timeout_seconds=request.request_timeout_seconds,
             prompt_cache=_cache_hint(request.prompt_cache),
-            provider_options=_provider_options(request.retry_policy),
+            provider_options=_provider_options(request.retry_policy, request.thinking),
         )
     except ValueError as error:
         # Some models refuse any forced tool choice, and the library says so
@@ -862,7 +862,9 @@ async def conversation_turn(
         if request.tool_choice is None or _FORCED_TOOL_CHOICE not in str(error):
             raise
         raise HTTPException(status_code=400, detail=str(error)) from error
-    route: ServedRoute = _route_of_result(client, request.engine, request.model, turn)
+    route: ServedRoute = served_route_of_result(
+        client, request.engine, request.model, turn
+    )
     return ConversationTurnResponse(
         text=turn.text,
         tool_calls=[

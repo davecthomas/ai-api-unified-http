@@ -3,48 +3,43 @@
 """
 Which model served a request, when a fallback chain is in play.
 
-A pooled completions client with a chain (`COMPLETIONS_FALLBACKS`) may answer
-a request on a different engine and model than the caller asked for. The
-response has to say which one did, and cost has to be priced at it.
+A pooled completions client with a chain (`completions.fallbacks` in
+models.json) may answer a request on a different engine and model than the
+caller asked for: the requested model failed, or it is resting after a recent
+failure and the library started the request on the next candidate without
+asking it. The response has to say which one answered, and cost has to be
+priced at it.
 
-The library stamps the serving route on conversation and structured-output
-results. For a plain text prompt it offers only `last_route` on the client,
-and that is per-client state: the service shares one client across concurrent
-requests, so `last_route` can describe someone else's call by the time it is
-read. What is per-request is the library's `served_by_fallback` log record,
-emitted inside the call that moved. A logging filter copies it into a
-collector held in a ContextVar, which each request sets for itself.
+The library says so per call, which is what a service sharing one client
+across concurrent requests needs; `client.last_route` describes whichever
+call finished last. Conversation and structured results carry the serving
+engine and model on the result. A buffered text prompt is sent with
+`asend_prompt_with_result`, whose envelope carries the same. A stream has no
+envelope, so the service opens the library's `request_cost_scope` around it:
+the chain joins that scope, each provider call made for the stream lands on
+it as a line item, and the report that closes the scope names the call whose
+answer was returned.
 
-A ContextVar is what makes this safe under concurrency. Every request runs in
-its own task with its own context, and Starlette carries that context onto
-the worker threads it uses for a stream, so a record lands only in the
-collector of the request whose call logged it. The collector is a mutable
-object rather than a value, so a write on a worker thread is visible to the
-route that set it.
-
-No record means the requested primary served the call.
+Before library 3.7.0 the service read the chain's `served_by_fallback` log
+record instead. That record is written only when a candidate fails during
+the call, so a request that started on a fallback because the primary was
+resting would have been reported as served by the primary.
 """
 
 import logging
-import os
-from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import Final
+from dataclasses import dataclass
+from typing import Any, Final
 
-from ai_api_unified.completions.ai_fallback_completions import (
-    FALLBACK_EVENT_SERVED,
-)
+from ai_api_unified import AiFallbackCompletions, AIRequestCostReport
+from ai_api_unified.util.env_settings import EnvSettings
 
-# The library's settings for the chain and the reasons that move a request.
-# Names match the library's so one .env serves both (docs/requirements.md).
+# The library's settings keys for the chain and the reasons that move a
+# request. Since library 3.2.0 both live in models.json, as
+# `completions.fallbacks` and `completions.fallback_on`; these environment
+# keys still win over the file, with a one-time deprecation warning from the
+# library naming the field to move to.
 COMPLETIONS_FALLBACKS_ENV: Final[str] = "COMPLETIONS_FALLBACKS"
 COMPLETIONS_FALLBACK_ON_ENV: Final[str] = "COMPLETIONS_FALLBACK_ON"
-
-# Logger the library's fallback wrapper writes its events to.
-FALLBACK_LOGGER: Final[str] = "ai_api_unified.completions.ai_fallback_completions"
-
-# Label the library uses for a candidate with no model named.
-_DEFAULT_MODEL_LABEL: Final[str] = "<default>"
 
 
 @dataclass
@@ -54,7 +49,9 @@ class ServedRoute:
     Attributes:
         engine: Engine token that served the call.
         model: Model that served it, or None for that engine's default.
-        served_by_fallback: True when a fallback answered for a failed primary.
+        served_by_fallback: True when a candidate other than the requested
+            primary answered, whether because the primary failed or because
+            it was resting after a recent failure.
     """
 
     engine: str
@@ -62,91 +59,102 @@ class ServedRoute:
     served_by_fallback: bool = False
 
 
-@dataclass
-class _RouteCollector:
-    """Holds the fallback that served the current request, if one did."""
-
-    served: ServedRoute | None = field(default=None)
-
-
-_collector: ContextVar[_RouteCollector | None] = ContextVar(
-    "ai_api_unified_http_fallback_route", default=None
-)
-
-
-def _parse_label(label: str) -> tuple[str, str | None]:
-    """Split the library's `engine:model` label on its first colon."""
-    engine, _, model = label.partition(":")
-    if not model or model == _DEFAULT_MODEL_LABEL:
-        return engine, None
-    return engine, model
-
-
-class _ServedByFallbackFilter(logging.Filter):
-    """Copy the library's served-by-fallback record into the request's collector.
-
-    A filter rather than a handler so it sees every record on the logger
-    whatever the handler setup, and it never drops one: it only reads.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if getattr(record, "ai_fallback_event", None) != FALLBACK_EVENT_SERVED:
-            return True
-        collector: _RouteCollector | None = _collector.get()
-        label: object = getattr(record, "fallback_to", None)
-        if collector is not None and isinstance(label, str):
-            engine, model = _parse_label(label)
-            collector.served = ServedRoute(
-                engine=engine, model=model, served_by_fallback=True
-            )
-        return True
-
-
-_FILTER_MARKER: Final[str] = "_ai_api_unified_http_route_filter"
-
-
-def install_route_filter() -> None:
-    """Attach the filter to the library's fallback logger, once per process."""
-    fallback_logger: logging.Logger = logging.getLogger(FALLBACK_LOGGER)
-    if any(getattr(f, _FILTER_MARKER, False) for f in fallback_logger.filters):
-        return
-    # A logger drops a record below its level before any filter runs, so a
-    # LOG_LEVEL of ERROR would hide the WARNING this filter depends on.
-    if not fallback_logger.isEnabledFor(logging.WARNING):
-        fallback_logger.setLevel(logging.WARNING)
-    route_filter = _ServedByFallbackFilter()
-    setattr(route_filter, _FILTER_MARKER, True)
-    fallback_logger.addFilter(route_filter)
-
-
-def start_route_tracking() -> _RouteCollector:
-    """Give the current request its own collector.
-
-    Returns:
-        _RouteCollector: Pass it to `served_route` after the call.
-    """
-    install_route_filter()
-    collector = _RouteCollector()
-    _collector.set(collector)
-    return collector
-
-
 def served_route(
-    collector: _RouteCollector, engine: str, model: str | None
+    client: Any,
+    engine: str,
+    model: str | None,
+    served_engine: str | None,
+    served_model: str | None,
 ) -> ServedRoute:
-    """Return where the request was served.
+    """Decide which route served a call from what the library reported.
 
     Args:
-        collector: The collector `start_route_tracking` returned.
-        engine: The requested engine, reported when the primary served.
-        model: The requested model.
+        client: The pooled client the route called.
+        engine: The requested engine.
+        model: The requested model, or None for the engine default.
+        served_engine: Engine token the library says answered, or None.
+        served_model: Model the library says answered, or None.
 
     Returns:
-        ServedRoute: The fallback that served, or the requested primary.
+        ServedRoute: The requested engine and model when the primary served,
+            else the fallback that did. A plain client, one with no chain,
+            can only have served the call itself, whatever it reports; so
+            can a chain that reported nothing.
     """
-    if collector.served is not None:
-        return collector.served
-    return ServedRoute(engine=engine, model=model)
+    if not served_engine or not isinstance(client, AiFallbackCompletions):
+        return ServedRoute(engine=engine, model=model)
+    # The chain's primary resolves the engine default, so the comparison is
+    # against the resolved model rather than the request's None.
+    primary_model: str | None = getattr(client.primary, "model_name", None)
+    if served_engine == engine.strip().lower() and served_model == primary_model:
+        return ServedRoute(engine=engine, model=model)
+    return ServedRoute(
+        engine=served_engine, model=served_model or None, served_by_fallback=True
+    )
+
+
+def served_route_of_result(
+    client: Any, engine: str, model: str | None, result: Any
+) -> ServedRoute:
+    """Read which model served from a result envelope.
+
+    `AIPromptResult`, `AITurnResult`, and `AIStructuredOutputResult` all
+    carry `provider_engine` and `model_name`, which a chain fills with the
+    candidate that answered. A test double that carries neither reads as
+    served by the primary.
+    """
+    return served_route(
+        client,
+        engine,
+        model,
+        getattr(result, "provider_engine", None),
+        getattr(result, "model_name", None),
+    )
+
+
+def served_route_of_report(
+    client: Any, engine: str, model: str | None, report: AIRequestCostReport | None
+) -> ServedRoute:
+    """Read which model served from the request cost report of a stream.
+
+    The report's `served_by_engine` and `served_by_model` come from the line
+    item the library marked as served when the stream ended. A stream whose
+    engine recorded no line item (a test double) reads as served by the
+    primary.
+    """
+    if report is None:
+        return ServedRoute(engine=engine, model=model)
+    return served_route(
+        client, engine, model, report.served_by_engine, report.served_by_model
+    )
+
+
+def configured_fallbacks() -> str:
+    """Return the configured chain as the library's `engine:model,...` text.
+
+    Read through the library's own settings resolver, so the value comes from
+    the process environment, then `.env`, then `completions.fallbacks` in
+    models.json, in that order. Reading `os.environ` directly, as the service
+    did before models.json existed, would ignore the file and leave a
+    deployment that moved its chain there with no fallback at all.
+
+    Returns:
+        str: The chain, or an empty string when none is configured.
+    """
+    value: object = EnvSettings().get_setting(COMPLETIONS_FALLBACKS_ENV, "")
+    return str(value) if value is not None else ""
+
+
+def configured_fallback_reasons() -> str:
+    """Return the configured trigger reasons as the library's comma text.
+
+    Resolved the same way as `configured_fallbacks`.
+
+    Returns:
+        str: The reasons, or an empty string for the library's default set.
+    """
+    value: object = EnvSettings().get_setting(COMPLETIONS_FALLBACK_ON_ENV, "")
+    return str(value).strip() if value is not None else ""
 
 
 class FallbackMisconfiguredError(RuntimeError):
@@ -166,7 +174,7 @@ def verify_fallback_config() -> list[str]:
 
     Raises:
         FallbackMisconfiguredError: When a candidate names an unknown engine
-            or `COMPLETIONS_FALLBACK_ON` names an unknown reason.
+            or the configured reasons include an unknown one.
     """
     # Imported here so the module stays importable for its request-path
     # helpers without pulling the registry in.
@@ -182,19 +190,18 @@ def verify_fallback_config() -> list[str]:
     )
 
     logger: logging.Logger = logging.getLogger(__name__)
-    candidates = parse_fallback_candidates(
-        os.environ.get(COMPLETIONS_FALLBACKS_ENV, "")
-    )
+    candidates = parse_fallback_candidates(configured_fallbacks())
     for candidate in candidates:
         try:
             get_ai_provider_spec(AI_PROVIDER_CAPABILITY_COMPLETIONS, candidate.engine)
         except AiProviderConfigurationError as error:
             raise FallbackMisconfiguredError(
-                f"{COMPLETIONS_FALLBACKS_ENV} names {candidate.engine!r}, which "
+                f"the fallback chain (completions.fallbacks in models.json, or "
+                f"{COMPLETIONS_FALLBACKS_ENV}) names {candidate.engine!r}, which "
                 f"is not a completions engine: {error}"
             ) from error
     try:
-        raw_reasons: str = os.environ.get(COMPLETIONS_FALLBACK_ON_ENV, "").strip()
+        raw_reasons: str = configured_fallback_reasons()
         reasons = (
             parse_fallback_reasons(raw_reasons)
             if raw_reasons
@@ -202,7 +209,7 @@ def verify_fallback_config() -> list[str]:
         )
     except ValueError as error:
         raise FallbackMisconfiguredError(
-            f"{COMPLETIONS_FALLBACK_ON_ENV}: {error}"
+            f"completions.fallback_on (or {COMPLETIONS_FALLBACK_ON_ENV}): {error}"
         ) from error
 
     labels: list[str] = [candidate.label for candidate in candidates]
@@ -213,5 +220,9 @@ def verify_fallback_config() -> list[str]:
             ",".join(sorted(reason.value for reason in reasons)),
         )
     else:
-        logger.info("model fallback: off (%s unset)", COMPLETIONS_FALLBACKS_ENV)
+        logger.info(
+            "model fallback: off (completions.fallbacks in models.json is empty "
+            "and %s is unset)",
+            COMPLETIONS_FALLBACKS_ENV,
+        )
     return labels

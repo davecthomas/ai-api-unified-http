@@ -18,9 +18,11 @@ caller who owns it, exactly as fetching that artifact directly is.
 """
 
 import base64
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from ai_api_unified import AIPromptResult, AIRequestCostReport
 from fastapi.testclient import TestClient
 
 from ai_api_unified_http import artifacts, rate_limit
@@ -48,11 +50,29 @@ def store(tmp_path, monkeypatch: pytest.MonkeyPatch):
     return tmp_path
 
 
+def _prompt_result(text: str) -> AIPromptResult:
+    """The envelope `asend_prompt_with_result` returns, with nothing costed."""
+    return AIPromptResult(
+        text=text,
+        cost=AIRequestCostReport(
+            request_id="test",
+            operation="asend_prompt_with_result",
+            status="ok",
+            started_at_utc=datetime.now(UTC),
+            elapsed_ms=1.0,
+        ),
+    )
+
+
 @pytest.fixture
 def fake_client() -> MagicMock:
     fake = MagicMock()
-    fake.asend_prompt = AsyncMock(return_value="a red bicycle")
+    fake.asend_prompt_with_result = AsyncMock(
+        return_value=_prompt_result("a red bicycle")
+    )
     fake.send_prompt_streaming = MagicMock(return_value=iter(["a ", "bicycle"]))
+    # No rates on record, so usd_cost is null rather than a MagicMock's repr.
+    fake.capabilities.pricing.token_rates = None
     return fake
 
 
@@ -91,7 +111,7 @@ class TestAttachmentsReachTheProvider:
                 headers=_auth(),
             )
         assert response.status_code == 200
-        params = _params_of(fake_client.asend_prompt.await_args)
+        params = _params_of(fake_client.asend_prompt_with_result.await_args)
         assert params.included_data == [PNG]
         assert params.included_mime_types == ["image/png"]
 
@@ -113,7 +133,7 @@ class TestAttachmentsReachTheProvider:
                 },
                 headers=_auth(),
             )
-        params = _params_of(fake_client.asend_prompt.await_args)
+        params = _params_of(fake_client.asend_prompt_with_result.await_args)
         assert len(params.included_types) == 2
         assert len(params.included_data) == 2
         assert params.included_mime_types == ["image/png", "image/jpeg"]
@@ -147,7 +167,10 @@ class TestAttachmentsReachTheProvider:
             client.post(
                 PATH, json={"engine": "claude", "prompt": "hi"}, headers=_auth()
             )
-        assert fake_client.asend_prompt.await_args.kwargs["other_params"] is None
+        assert (
+            fake_client.asend_prompt_with_result.await_args.kwargs["other_params"]
+            is None
+        )
 
 
 class TestTheLibraryOwnsThePolicy:
@@ -169,7 +192,7 @@ class TestTheLibraryOwnsThePolicy:
                 headers=_auth(),
             )
         assert response.status_code == 400
-        fake_client.asend_prompt.assert_not_awaited()
+        fake_client.asend_prompt_with_result.assert_not_awaited()
 
     def test_an_unclassifiable_mime_type_is_400(
         self, client: TestClient, fake_client: MagicMock, store
@@ -287,7 +310,7 @@ class TestArtifactAttachments:
                 headers=_auth(),
             )
         assert response.status_code == 200
-        params = _params_of(fake_client.asend_prompt.await_args)
+        params = _params_of(fake_client.asend_prompt_with_result.await_args)
         assert params.included_data == [PNG]
         # The store knows what it wrote, so its type is used.
         assert params.included_mime_types == ["image/png"]
@@ -309,7 +332,7 @@ class TestArtifactAttachments:
                 headers=_auth(SECOND_KEY),
             )
         assert response.status_code == 404
-        fake_client.asend_prompt.assert_not_awaited()
+        fake_client.asend_prompt_with_result.assert_not_awaited()
 
     def test_an_unknown_artifact_is_404(
         self, client: TestClient, fake_client: MagicMock, store

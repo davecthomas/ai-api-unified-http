@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.12.0
+# ai-api-unified-http 1.13.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -56,12 +56,31 @@ there works here. With no such checkout it says so and points at
 [`env_template`](env_template), which is the path that needs nothing but this
 repo. Either way it refuses to overwrite an existing `.env`.
 
-After copying, check `COMPLETIONS_MODEL_NAME`:
+`.env` holds secrets and the service's own settings. Everything else the
+library needs (engines and default models, the fallback chain, the thinking
+level, the voice engine, the middleware profile) lives in
+[`config/models.json`](config/models.json), the library's `models.json`
+format, which the service points the library at when `AI_MODELS_CONFIG` is
+unset. The shipped file selects `claude` for completions, Gemini embeddings,
+and OpenAI voice, with cost emission on. Edit it to change a default, and
+check it with the library's validator:
 
-- `COMPLETIONS_MODEL_NAME` must belong to `COMPLETIONS_ENGINE`. A Gemini model
-  name against the `claude` engine reaches Anthropic and returns 404.
-- Comment the line out to use the engine's default. An empty assignment is not
-  the same as unset: the value is forwarded and the provider rejects it.
+```bash
+poetry run python -m ai_api_unified.config_schema validate config/models.json
+```
+
+`AI_MODELS_ENV` picks an entry under `environments` in the file and merges it
+over the rest, so one file can carry a `prod` variant. The pre-3.x selection
+keys (`COMPLETIONS_ENGINE`, `COMPLETIONS_FALLBACKS`, `AI_VOICE_ENGINE`, ...)
+still work and still win over the file, with one deprecation warning per key
+at startup. To move them out of an existing `.env`, run the library's
+migrator from this repo's root with the library checkout beside it. It reads
+and edits the `.env` in its working directory, so mind where you run it:
+
+```bash
+poetry run python ../ai_api_unified/scripts/migrate2json.py \
+  --out config/models.json --force --comment-env
+```
 
 `.env` is a local-development convenience. It is read at startup when present,
 and real environment variables always win, so a deployment supplying its own
@@ -164,11 +183,12 @@ name would end up in the cost sink.
 
 ### Middleware and cost events
 
-Both belong to the library, configured by one YAML at
-`AI_MIDDLEWARE_CONFIG_PATH`, which defaults to
-[`config/middleware.yaml`](config/middleware.yaml). The
+Both belong to the library, configured by the `middleware` list in
+[`config/models.json`](config/models.json). The
 [library README](https://github.com/davecthomas/ai-api-unified) documents what
-that profile can contain.
+that list can contain. A YAML profile named by the library's deprecated
+`AI_MIDDLEWARE_CONFIG_PATH` still wins over the file, and the startup check
+below reads whichever one the library is using.
 
 The service adds two behaviors:
 
@@ -182,6 +202,13 @@ The service adds two behaviors:
 
 `HTTP_COST_LOG_PATH` sets the sink, defaulting to `cost-events.jsonl`. On Cloud
 Run, events go to stdout and land in Cloud Logging.
+
+Two kinds of event land there. `ai_api_call_cost` is one provider call, as
+before. `ai_api_request_cost` (library 3.3.0) is one request: its `calls`
+list holds every provider call the request made (a failed attempt, each
+fallback, a classifier), `total_usd` sums them, `wasted_usd` is what was
+billed for answers nobody used, and `served_by` names the call whose answer
+came back. Both carry the caller headers as `caller_id` and `tag_*` fields.
 
 ### When a provider error is not wrapped
 
@@ -373,8 +400,10 @@ separately, `usd_cost` prices all three, and `/v1/models` publishes the rates.
 A caller warming a large cache would otherwise see a figure understated by
 orders of magnitude rather than slightly.
 
-`/v1/completions` reports no cost, because the library's buffered completion
-call returns bare text with no usage to price.
+A buffered `/v1/completions` call reports `usage` and `usd_cost` too, from the
+envelope the library's `send_prompt_with_result` returns (3.16.0). A stream
+reports neither: its `done` event names the model that answered, and the
+request's cost event in the sink carries the total.
 
 When a fallback answered (see [Model fallback](#model-fallback)), `usd_cost`
 is priced at the fallback's rates, not the requested model's.
@@ -408,18 +437,48 @@ A hit needs the prefix to match byte for byte. A timestamp or request id in
 the system prompt defeats it. Whether a call hit shows in
 `usage.cached_input_tokens`, and `usd_cost` prices the reads and writes.
 
+### Thinking
+
+Library 3.5.0 states how much a model should think as one provider-neutral
+level, `off`, `minimal`, `low`, `medium`, `high`, or `max`, and maps it onto
+each provider's own control (Anthropic effort, OpenAI `reasoning_effort`,
+Gemini `thinking_level` or a budget). **The default is `medium` on every
+model with a thinking control**, a change from 2.x, where thinking was off
+unless a caller set a provider option: a Claude or Gemini call now spends
+thinking tokens by default, with the latency and cost that brings.
+
+The deployment's level is `completions.thinking` in `config/models.json`.
+`/v1/completions`, `/v1/structured`, and `/v1/conversations/turn` take
+`thinking` to change it for one call:
+
+```json
+{"engine": "claude", "prompt": "What is 2 + 2?", "thinking": "off"}
+```
+
+A model that cannot honor a level exactly applies the nearest one it supports
+(ties go lower), and `off` on a model whose thinking is always on applies its
+lowest level. A forced `tool_choice` turns thinking off on the models that
+require that.
+
 ### Model fallback
 
 A deployment can name backup models, tried in order when the requested one
-cannot serve a request. The chain is the library's (ai-api-unified 2.35.0),
-configured with the library's own settings:
+cannot serve a request. The chain is the library's (ai-api-unified 3.22.0),
+configured in `config/models.json`:
 
-```bash
-# Ordered engine:model pairs. Each engine needs its own provider key.
-COMPLETIONS_FALLBACKS=claude:claude-sonnet-5,openai:gpt-5.6-luna,google-gemini
-# Optional. Which failures move a request on; this is the default.
-COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted,auth_rejected
+```json
+"completions": {
+  "engine": "claude",
+  "fallbacks": ["claude:claude-sonnet-5", "openai:gpt-5.6-luna", "google-gemini"],
+  "fallback_on": "unavailable,rate_limited,quota_exhausted,auth_rejected",
+  "retry_policy": "default",
+  "cooldown": true
+}
 ```
+
+Each fallback engine needs its own provider key. `COMPLETIONS_FALLBACKS` and
+`COMPLETIONS_FALLBACK_ON` in the environment still override the file, which
+is how `make gcp-deploy FALLBACKS=...` sets a chain without editing it.
 
 The chain sits behind whatever engine a request names, and a pair naming the
 requested model itself is skipped. The service refuses to start if the chain
@@ -439,8 +498,8 @@ Validation errors and refusals never fail over. `model_unavailable` is off
 because an unknown model id usually means a typo that a working fallback would
 hide. `auth_rejected` is on because a revoked key otherwise takes a provider
 out entirely; the library logs every failover, so a rejected key still shows
-up while traffic keeps flowing. Leave it out of `COMPLETIONS_FALLBACK_ON` to
-make a bad key fail loudly instead.
+up while traffic keeps flowing. Leave it out of `fallback_on` to make a bad
+key fail loudly instead.
 
 **Same account.** After a spend cap or a rejected key, the provider's other
 models would fail the same way, so the chain skips the rest of that account
@@ -448,15 +507,27 @@ and goes to the next provider. Per-model limits (a Gemini daily quota, Bedrock
 model access) keep the account's other models in play. The error body's
 `account_wide` says which kind a failure was.
 
+**Cooldown.** A model that failed with one of these reasons rests before it
+is tried again (library 3.7.0): 30 seconds after `unavailable`,
+`rate_limited`, or `timeout`, five minutes after `quota_exhausted` or
+`model_unavailable`, an hour after `auth_rejected`. A request during the rest
+starts at the next model instead of paying the failed one's backoff again,
+and the response reports it as `served_by_fallback` although the requested
+model was never asked. A resting model is tried last, never dropped, so a
+cooldown cannot fail a request the chain could have served. The bench is per
+process and ends as soon as the model serves a request. `"cooldown": false`
+restores the old behaviour, and
+`{"enabled": true, "seconds": {"rate_limited": 10}}` tunes one reason.
+
 **Timeouts.** `timeout` is off by default because the deadline is yours, and
 each candidate adds its own wait. To treat a provider that hangs as an outage,
-add `timeout` to `COMPLETIONS_FALLBACK_ON`, then send a short
-`request_timeout_seconds` with `"retry_policy": "none"`. Without the latter,
-the Anthropic and OpenAI SDKs retry a timeout twice before the chain sees it.
-`retry_policy` is accepted on `/v1/structured` and `/v1/conversations/turn`.
-The library offers no per-call setting for a plain text prompt, so for
-`/v1/completions` set `COMPLETIONS_RETRY_POLICY=none` on the deployment. A
-timeout that reaches the caller is a 504 `provider_timeout`.
+add `timeout` to `fallback_on`, then send a short `request_timeout_seconds`
+with `"retry_policy": "none"`. Without the latter, the Anthropic and OpenAI
+SDKs retry a timeout twice before the chain sees it. `retry_policy` is
+accepted on `/v1/structured` and `/v1/conversations/turn`. The library offers
+no per-call setting for a plain text prompt, so for `/v1/completions` set
+`completions.retry_policy` to `none` on the deployment. A timeout that reaches
+the caller is a 504 `provider_timeout`.
 
 `/v1/completions` (buffered and streamed), `/v1/structured`, and
 `/v1/conversations/turn` take part. Responses name the model that actually
@@ -662,11 +733,11 @@ fetched with a progress bar and a resumable range.
 no support for them. Sending them anyway would be synthesized, billed, and the
 instruction silently dropped.
 
-`AI_VOICE_ENGINE` selects the engine and has no default; without it both
-endpoints answer 503 naming the setting. The library also reads `.env` directly
-from its working directory, so in local development that file can supply it.
-`make gcp-deploy` sets `openai`, so a deployment serves voice out of the box;
-synthesis needs `OPENAI_API_KEY`, which the deploy already mounts.
+`voice.engine` in `config/models.json` selects the engine and has no default;
+without it both endpoints answer 503 naming the setting. The shipped file sets
+`openai`, so a deployment serves voice out of the box; synthesis needs
+`OPENAI_API_KEY`, which the deploy already mounts. The deprecated
+`AI_VOICE_ENGINE` key still overrides the file.
 
 Synthesis works on the OpenAI path from library 2.24.0, which fixed the
 `AIVoiceOpenAI` defect that made it raise for every caller. The Google path

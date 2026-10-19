@@ -12,24 +12,46 @@ already gone out.
 
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from ai_api_unified import (
     AIPromptCacheHint,
     AIPromptCacheRetention,
+    AIPromptResult,
     AiProviderRequestError,
+    AIRequestCostReport,
+    AIThinkingLevel,
 )
 from fastapi.testclient import TestClient
 
 PATH: str = "/v1/completions"
 
 
+def _prompt_result(text: str) -> AIPromptResult:
+    """The envelope `asend_prompt_with_result` returns, with nothing costed."""
+    return AIPromptResult(
+        text=text,
+        cost=AIRequestCostReport(
+            request_id="test",
+            operation="asend_prompt_with_result",
+            status="ok",
+            started_at_utc=datetime.now(UTC),
+            elapsed_ms=1.0,
+        ),
+    )
+
+
 @pytest.fixture
 def fake_client() -> MagicMock:
     """Stand-in for a pooled completions client."""
     client = MagicMock()
-    client.asend_prompt = AsyncMock(return_value="generated text")
+    client.asend_prompt_with_result = AsyncMock(
+        return_value=_prompt_result("generated text")
+    )
+    # No rates on record, so usd_cost is null rather than a MagicMock's repr.
+    client.capabilities.pricing.token_rates = None
     return client
 
 
@@ -50,12 +72,15 @@ class TestBuffered:
             PATH, json={"engine": "claude", "model": "claude-opus-5", "prompt": "hi"}
         )
         assert response.status_code == 200
-        assert response.json() == {
-            "text": "generated text",
-            "engine": "claude",
-            "model": "claude-opus-5",
-            "served_by_fallback": False,
-        }
+        body = response.json()
+        assert body["text"] == "generated text"
+        assert (body["engine"], body["model"]) == ("claude", "claude-opus-5")
+        assert body["served_by_fallback"] is False
+        # Library 3.16.0: the text call's envelope carries usage and cost
+        # like the structured and conversation calls. Nothing was reported
+        # here, and an unpriced model is null, never zero.
+        assert body["usd_cost"] is None
+        assert set(body["usage"]) >= {"input_tokens", "output_tokens"}
 
     def test_pool_is_keyed_on_the_requested_engine_and_model(
         self, client: TestClient, pooled: MagicMock
@@ -86,7 +111,7 @@ class TestBuffered:
         # work there. The library documents other_params.system_prompt as
         # winning when both are supplied, and both come from the same request
         # field, so they agree.
-        fake_client.asend_prompt.assert_awaited_once_with(
+        fake_client.asend_prompt_with_result.assert_awaited_once_with(
             "hi",
             system_prompt="be terse",
             max_response_tokens=128,
@@ -97,7 +122,7 @@ class TestBuffered:
     def test_provider_failure_maps_through_the_error_handlers(
         self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
     ) -> None:
-        fake_client.asend_prompt.side_effect = AiProviderRequestError(
+        fake_client.asend_prompt_with_result.side_effect = AiProviderRequestError(
             "rate limited", status_code=429, provider_engine="claude"
         )
         response = client.post(PATH, json={"engine": "claude", "prompt": "hi"})
@@ -124,7 +149,7 @@ class TestPromptCache:
                 "prompt_cache": {"retention": "extended", "key": "tenant-7"},
             },
         )
-        params = fake_client.asend_prompt.call_args.kwargs["other_params"]
+        params = fake_client.asend_prompt_with_result.call_args.kwargs["other_params"]
         assert params.prompt_cache == AIPromptCacheHint(
             retention=AIPromptCacheRetention.EXTENDED, key="tenant-7"
         )
@@ -135,14 +160,17 @@ class TestPromptCache:
         # With no system prompt and no attachments there is otherwise nothing
         # to carry, and the hint would be dropped on the floor.
         client.post(PATH, json={"engine": "claude", "prompt": "hi", "prompt_cache": {}})
-        params = fake_client.asend_prompt.call_args.kwargs["other_params"]
+        params = fake_client.asend_prompt_with_result.call_args.kwargs["other_params"]
         assert params.prompt_cache.retention is AIPromptCacheRetention.DEFAULT
 
     def test_no_cache_request_sends_no_hint(
         self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
     ) -> None:
         client.post(PATH, json={"engine": "claude", "prompt": "hi"})
-        assert fake_client.asend_prompt.call_args.kwargs["other_params"] is None
+        assert (
+            fake_client.asend_prompt_with_result.call_args.kwargs["other_params"]
+            is None
+        )
 
     def test_the_hint_travels_on_the_streaming_path(
         self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
@@ -170,6 +198,57 @@ class TestPromptCache:
                 "prompt": "hi",
                 "prompt_cache": {"retention": "forever"},
             },
+        )
+        assert response.status_code == 422
+        pooled.assert_not_called()
+
+
+class TestThinking:
+    """Library 3.5.0: one provider-neutral thinking level, medium by default.
+
+    The default is the deployment's (`completions.thinking` in models.json);
+    a request names a level to spend more or less on one call.
+    """
+
+    def test_a_level_reaches_the_library_on_the_params(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        client.post(PATH, json={"engine": "claude", "prompt": "hi", "thinking": "off"})
+        params = fake_client.asend_prompt_with_result.call_args.kwargs["other_params"]
+        assert params.thinking is AIThinkingLevel.OFF
+
+    def test_no_level_leaves_the_deployment_default_in_charge(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        # No params at all, so the library applies the configured level
+        # rather than a None the service invented.
+        client.post(PATH, json={"engine": "claude", "prompt": "hi"})
+        assert (
+            fake_client.asend_prompt_with_result.call_args.kwargs["other_params"]
+            is None
+        )
+
+    def test_the_level_travels_on_the_streaming_path(
+        self, client: TestClient, pooled: MagicMock, fake_client: MagicMock
+    ) -> None:
+        fake_client.send_prompt_streaming = MagicMock(return_value=iter(["x"]))
+        client.post(
+            PATH,
+            json={
+                "engine": "claude",
+                "prompt": "hi",
+                "stream": True,
+                "thinking": "high",
+            },
+        )
+        params = fake_client.send_prompt_streaming.call_args.kwargs["other_params"]
+        assert params.thinking is AIThinkingLevel.HIGH
+
+    def test_an_unknown_level_is_422(
+        self, client: TestClient, pooled: MagicMock
+    ) -> None:
+        response = client.post(
+            PATH, json={"engine": "claude", "prompt": "hi", "thinking": "ultra"}
         )
         assert response.status_code == 422
         pooled.assert_not_called()

@@ -36,11 +36,16 @@ DEFAULT_COST_TOPIC: Final[str] = "ai_api_unified.observability.cost"
 # the library actually publishes on.
 COST_TOPIC_ENV: Final[str] = "HTTP_COST_TOPIC"
 
-# The middleware profile this service ships. The library reads it from
-# AI_MIDDLEWARE_CONFIG_PATH; the service defaults that variable to this file so
-# a stock deployment starts with cost emission and PII redaction already on.
+# The configuration file this service ships: model selections and the
+# middleware profile, in the library's models.json format. The library reads
+# it from AI_MODELS_CONFIG; the service defaults that variable to this file so
+# a stock deployment starts with cost emission already on. A deployment that
+# still names a middleware YAML through the library's deprecated
+# AI_MIDDLEWARE_CONFIG_PATH keeps it: a set path wins over the file's
+# middleware section.
+MODELS_CONFIG_ENV: Final[str] = "AI_MODELS_CONFIG"
+DEFAULT_MODELS_CONFIG_PATH: Final[str] = "config/models.json"
 MIDDLEWARE_CONFIG_PATH_ENV: Final[str] = "AI_MIDDLEWARE_CONFIG_PATH"
-DEFAULT_MIDDLEWARE_CONFIG_PATH: Final[str] = "config/middleware.yaml"
 
 # Bootstrap sink. Expected to become a metrics pipeline, which is a handler
 # swap rather than a change to how capture works.
@@ -60,26 +65,40 @@ class CostEventNotCapturedError(RuntimeError):
     """
 
 
-def apply_default_middleware_config() -> None:
-    """Point the library at this service's middleware profile when unset.
+def apply_default_models_config() -> None:
+    """Point the library at this service's models.json when unset.
 
     Called before anything reads the library's configuration. A deployment
-    that supplies its own profile keeps it; the default exists so a stock
-    install starts with cost emission and PII redaction already on.
+    that names its own file keeps it, and one that sets the variable blank
+    keeps that too, because blank is the library's way of turning the file
+    off. The default exists so a stock install starts with the shipped
+    selections and cost emission already on.
     """
-    if os.environ.get(MIDDLEWARE_CONFIG_PATH_ENV):
+    if MODELS_CONFIG_ENV in os.environ:
         return
-    default: Path = Path(DEFAULT_MIDDLEWARE_CONFIG_PATH)
+    default: Path = Path(DEFAULT_MODELS_CONFIG_PATH)
     if not default.exists():
         logger.warning(
-            "%s is unset and %s is missing; the library will run with its "
-            "built-in middleware defaults, which do not emit cost events",
-            MIDDLEWARE_CONFIG_PATH_ENV,
+            "%s is unset and %s is missing; the library will run with no "
+            "model selections and its built-in middleware defaults, which do "
+            "not emit cost events",
+            MODELS_CONFIG_ENV,
             default,
         )
         return
-    os.environ[MIDDLEWARE_CONFIG_PATH_ENV] = str(default)
-    logger.info("middleware profile -> %s", default)
+    os.environ[MODELS_CONFIG_ENV] = str(default)
+    logger.info("models config -> %s", default)
+
+
+def _profile_location() -> str:
+    """Name the file whose middleware section the library is reading."""
+    yaml_path: str = os.environ.get(MIDDLEWARE_CONFIG_PATH_ENV, "")
+    if yaml_path:
+        return yaml_path
+    return (
+        f"the 'middleware' list in "
+        f"{os.environ.get(MODELS_CONFIG_ENV) or DEFAULT_MODELS_CONFIG_PATH}"
+    )
 
 
 def _resolved_observability_settings() -> Any | None:
@@ -226,17 +245,18 @@ def verify_cost_capture() -> None:
     if settings is None:
         raise CostEventNotCapturedError(
             f"The library's observability middleware is disabled, so no cost "
-            f"events are emitted at all. Point {MIDDLEWARE_CONFIG_PATH_ENV} at "
-            f"a profile with an enabled 'observability' entry; this service "
-            f"ships one at {DEFAULT_MIDDLEWARE_CONFIG_PATH}."
+            f"events are emitted at all. Point {MODELS_CONFIG_ENV} at a "
+            f"models.json whose 'middleware' list has an enabled "
+            f"'observability' entry; this service ships one at "
+            f"{DEFAULT_MODELS_CONFIG_PATH}. (A YAML profile named by "
+            f"{MIDDLEWARE_CONFIG_PATH_ENV} wins over the file.)"
         )
     if not settings.emit_cost:
         raise CostEventNotCapturedError(
             f"The library's observability middleware is enabled but "
             f"emit_cost is false, which is its default, so no cost events are "
             f"produced. Set 'emit_cost: true' under the observability entry in "
-            f"the profile at "
-            f"{os.environ.get(MIDDLEWARE_CONFIG_PATH_ENV, DEFAULT_MIDDLEWARE_CONFIG_PATH)}."
+            f"{_profile_location()}."
         )
 
     topic: str = cost_topic()

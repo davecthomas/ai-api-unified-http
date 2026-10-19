@@ -20,7 +20,6 @@ every cold start behind one Gemini network call, and a duplicate build is
 harmless because clients carry no state worth preserving.
 """
 
-import os
 import threading
 from typing import Any, Final
 
@@ -36,7 +35,7 @@ from ai_api_unified.completions.ai_fallback_completions import (
 )
 
 from .errors import ProviderNotConfiguredError, missing_variable_from
-from .fallback import COMPLETIONS_FALLBACKS_ENV
+from .fallback import configured_fallbacks
 
 # Key is (engine, model); model is None when the caller accepts the engine
 # default, which is a distinct pool entry from any named model.
@@ -64,9 +63,10 @@ def get_completions_client(
         engine: Completions engine token, e.g. "openai", "claude", "google-gemini".
         model: Model name, or None to accept the engine's configured default.
         fallback: Whether the client should retry a failed request on the
-            chain in `COMPLETIONS_FALLBACKS`. False returns the plain engine,
-            which is what batches, token counts, and pricing need. True with
-            no chain configured also returns the plain engine.
+            configured chain (`completions.fallbacks` in models.json). False
+            returns the plain engine, which is what batches, token counts,
+            and pricing need. True with no chain configured also returns the
+            plain engine.
 
     Returns:
         AIBaseCompletions: The pooled client, built on first use for this key.
@@ -76,6 +76,9 @@ def get_completions_client(
         AiProviderError: Propagated from the library when the engine is unknown
             or its credentials are missing. Surfacing at first use per key,
             rather than per request, is a documented consequence of pooling.
+            Since library 3.6.0 the first build per key also probes the
+            provider once to confirm the model is reachable (`model_check`
+            in models.json), memoized for the life of the process.
     """
     key: CompletionsPoolKey = (engine, model, fallback)
     cached: AIBaseCompletions | None = _completions_pool.get(key)
@@ -111,10 +114,10 @@ def fallback_chain_for(engine: str, model: str | None) -> list[AIFallbackCandida
 
     Returns:
         list[AIFallbackCandidate]: Candidates in configured order; empty when
-            `COMPLETIONS_FALLBACKS` is unset or blank.
+            no chain is configured in models.json or the environment.
     """
     candidates: list[AIFallbackCandidate] = parse_fallback_candidates(
-        os.environ.get(COMPLETIONS_FALLBACKS_ENV, "")
+        configured_fallbacks()
     )
     # The parser lowercases engine tokens, and so does the factory.
     requested: str = engine.strip().lower()
@@ -206,16 +209,17 @@ def get_voice_client() -> Any:
     """Return the pooled voice client for the configured engine.
 
     Voice is constructed through its own factory, which takes no arguments and
-    reads `AI_VOICE_ENGINE` itself, so there is one client per process rather
-    than one per engine and model. Changing engine needs a restart, which is
-    true of every other setting the library reads from the environment.
+    reads `voice.engine` from models.json itself (or the deprecated
+    `AI_VOICE_ENGINE`), so there is one client per process rather than one
+    per engine and model. Changing engine needs a restart, which is true of
+    every other setting the library reads from its configuration.
 
     Returns:
         Any: The pooled client, built on first use.
 
     Raises:
-        ProviderNotConfiguredError: When `AI_VOICE_ENGINE` is unset or names an
-            engine the library cannot load.
+        ProviderNotConfiguredError: When no voice engine is configured or the
+            configured one cannot be loaded.
     """
     key: PoolKey = ("voice", None)
     cached: Any = _media_pool.get(key)

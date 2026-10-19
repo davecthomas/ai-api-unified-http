@@ -16,6 +16,8 @@ import logging
 from pathlib import Path
 
 import pytest
+from ai_api_unified import AiCandidateCooldowns
+from ai_api_unified.ai_models_config import clear_models_config_cache
 from fastapi.testclient import TestClient
 
 from ai_api_unified_http import auth, config, cost
@@ -49,11 +51,24 @@ def service_env(
     monkeypatch.delenv(auth.AUTH_DISABLED_ENV, raising=False)
 
     # Set explicitly rather than letting startup fill it in. apply_default_
-    # middleware_config writes to os.environ, which outlives the test that
+    # models_config writes to os.environ, which outlives the test that
     # triggered it, so leaving it unset made results depend on test order.
+    # The shipped file is the one under test: its middleware section is what
+    # makes cost capture pass, and a test wanting different selections names
+    # its own file or inline JSON.
     monkeypatch.setenv(
-        cost.MIDDLEWARE_CONFIG_PATH_ENV, str(REPO_ROOT / "config" / "middleware.yaml")
+        cost.MODELS_CONFIG_ENV, str(REPO_ROOT / "config" / "models.json")
     )
+    # A developer's own middleware YAML or environment overlay would shadow
+    # the file, and the library honours both.
+    monkeypatch.delenv(cost.MIDDLEWARE_CONFIG_PATH_ENV, raising=False)
+    monkeypatch.delenv("AI_MODELS_ENV", raising=False)
+    clear_models_config_cache()
+
+    # Library 3.7.0 benches a fallback candidate process-wide after it fails
+    # with a trigger reason, so a failure one test staged would reroute the
+    # next test's request to the fallback with the primary never asked.
+    AiCandidateCooldowns.reset()
 
     topic: str = f"test.{request.node.name}"
     monkeypatch.setenv(cost.COST_TOPIC_ENV, topic)

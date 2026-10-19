@@ -769,7 +769,7 @@ export interface components {
             engine: string;
             /**
              * Fallback
-             * @description Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.
+             * @description Whether the request may be retried on the deployment's fallback chain (completions.fallbacks in models.json) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain. A candidate that failed recently is resting, and a request during its rest starts on the next candidate without asking it.
              * @default true
              */
             fallback: boolean;
@@ -794,15 +794,20 @@ export interface components {
             stream: boolean;
             /** System Prompt */
             system_prompt?: string | null;
+            /**
+             * Thinking
+             * @description How much the model thinks before answering, as one provider-neutral level the library maps onto each provider's own control (Anthropic effort, OpenAI reasoning_effort, Gemini thinking_level or budget). Omit it for the deployment's level, completions.thinking in models.json, which is 'medium' unless changed: thinking is on by default, and it adds output tokens, latency, and cost. 'off' turns it off where the model allows. A model that cannot honor a level exactly applies the nearest one it supports.
+             */
+            thinking?: ("off" | "minimal" | "low" | "medium" | "high" | "max") | null;
         };
         /**
          * CompletionResponse
          * @description Buffered completion result.
          *
-         *     Text only, because `asend_prompt` returns a bare `str`. Token usage and a
-         *     finish reason would require routing this through the conversation call
-         *     instead, which is a different provider path than the endpoint documents.
-         *     `/v1/conversations/turn` and `/v1/structured` return both natively.
+         *     Sent with the library's `asend_prompt_with_result`, whose envelope says
+         *     which engine and model answered and what the call used, so this response
+         *     carries usage and cost like `/v1/structured` and `/v1/conversations/turn`.
+         *     There is no finish reason: the text call does not report one.
          */
         CompletionResponse: {
             /**
@@ -826,6 +831,13 @@ export interface components {
              * @description Generated completion text.
              */
             text: string;
+            /** @description Token counts of the call that answered. */
+            usage?: components["schemas"]["TokenUsage"];
+            /**
+             * Usd Cost
+             * @description Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero — null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.
+             */
+            usd_cost?: string | null;
         };
         /** ConversationTurnRequest */
         ConversationTurnRequest: {
@@ -836,7 +848,7 @@ export interface components {
             engine: string;
             /**
              * Fallback
-             * @description Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.
+             * @description Whether the request may be retried on the deployment's fallback chain (completions.fallbacks in models.json) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain. A candidate that failed recently is resting, and a request during its rest starts on the next candidate without asking it.
              * @default true
              */
             fallback: boolean;
@@ -860,11 +872,16 @@ export interface components {
             request_timeout_seconds?: number | null;
             /**
              * Retry Policy
-             * @description 'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's COMPLETIONS_RETRY_POLICY.
+             * @description 'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose completions.fallback_on includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's completions.retry_policy.
              */
             retry_policy?: ("default" | "none") | null;
             /** System Prompt */
             system_prompt: string;
+            /**
+             * Thinking
+             * @description How much the model thinks before answering, as one provider-neutral level the library maps onto each provider's own control (Anthropic effort, OpenAI reasoning_effort, Gemini thinking_level or budget). Omit it for the deployment's level, completions.thinking in models.json, which is 'medium' unless changed: thinking is on by default, and it adds output tokens, latency, and cost. 'off' turns it off where the model allows. A model that cannot honor a level exactly applies the nearest one it supports.
+             */
+            thinking?: ("off" | "minimal" | "low" | "medium" | "high" | "max") | null;
             /**
              * Tool Choice
              * @description Name of a tool the model must call. Claude Opus 5.5 and Fable 5.1 refuse any forced choice, and a request setting one on those models is answered with 400 before it reaches the provider.
@@ -1265,7 +1282,7 @@ export interface components {
             engine: string;
             /**
              * Fallback
-             * @description Whether the request may be retried on the deployment's fallback chain (COMPLETIONS_FALLBACKS) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain.
+             * @description Whether the request may be retried on the deployment's fallback chain (completions.fallbacks in models.json) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain. A candidate that failed recently is resting, and a request during its rest starts on the next candidate without asking it.
              * @default true
              */
             fallback: boolean;
@@ -1295,11 +1312,16 @@ export interface components {
             };
             /**
              * Retry Policy
-             * @description 'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's COMPLETIONS_RETRY_POLICY.
+             * @description 'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose completions.fallback_on includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's completions.retry_policy.
              */
             retry_policy?: ("default" | "none") | null;
             /** System Prompt */
             system_prompt?: string | null;
+            /**
+             * Thinking
+             * @description How much the model thinks before answering, as one provider-neutral level the library maps onto each provider's own control (Anthropic effort, OpenAI reasoning_effort, Gemini thinking_level or budget). Omit it for the deployment's level, completions.thinking in models.json, which is 'medium' unless changed: thinking is on by default, and it adds output tokens, latency, and cost. 'off' turns it off where the model allows. A model that cannot honor a level exactly applies the nearest one it supports.
+             */
+            thinking?: ("off" | "minimal" | "low" | "medium" | "high" | "max") | null;
         };
         /**
          * StructuredResponse

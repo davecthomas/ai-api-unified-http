@@ -47,8 +47,9 @@ env:
 		if [ -f "$$candidate" ]; then \
 			cp "$$candidate" .env; \
 			echo "copied $$candidate -> .env"; \
-			echo "review it: this service needs no IMAGE_/VIDEO_ settings, and"; \
-			echo "COMPLETIONS_MODEL_NAME must match COMPLETIONS_ENGINE."; \
+			echo "review it: secrets are all this service needs from it; model"; \
+			echo "selections live in config/models.json, and a selection key"; \
+			echo "left in .env overrides the file with a deprecation warning."; \
 			exit 0; \
 		fi; \
 	done; \
@@ -173,7 +174,7 @@ gcp-deploy:
 		--add-volume=name=artifacts,type=cloud-storage,bucket=$(BUCKET) \
 		--add-volume-mount=volume=artifacts,mount-path=/artifacts \
 		$(if $(CPU_ALWAYS_ON),--no-cpu-throttling,) \
-		--set-env-vars "^|^COMPLETIONS_ENGINE=claude|AI_VOICE_ENGINE=openai|HTTP_RATE_LIMIT=60|LOG_LEVEL=INFO|WEB_CONCURRENCY=1|HTTP_CLIENT_IP_FROM_XFF=1|HTTP_ARTIFACT_DIR=/artifacts|HTTP_CORS_ORIGINS=$(CORS_ORIGINS)$(if $(FALLBACKS),|COMPLETIONS_FALLBACKS=$(FALLBACKS),)" \
+		--set-env-vars "^|^HTTP_RATE_LIMIT=60|LOG_LEVEL=INFO|WEB_CONCURRENCY=1|HTTP_CLIENT_IP_FROM_XFF=1|HTTP_ARTIFACT_DIR=/artifacts|HTTP_CORS_ORIGINS=$(CORS_ORIGINS)$(if $(FALLBACKS),|COMPLETIONS_FALLBACKS=$(FALLBACKS),)" \
 		--set-secrets "HTTP_API_KEYS=HTTP_API_KEYS:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,GOOGLE_GEMINI_API_KEY=GOOGLE_GEMINI_API_KEY:latest" \
 		--quiet
 	@$(MAKE) --no-print-directory gcp-url PROJECT=$(PROJECT)
