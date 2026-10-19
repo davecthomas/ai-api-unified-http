@@ -655,6 +655,22 @@
             ],
             "title": "Request Timeout Seconds"
           },
+          "retry_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "default",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's COMPLETIONS_RETRY_POLICY.",
+            "title": "Retry Policy"
+          },
           "system_prompt": {
             "maxLength": 50000,
             "title": "System Prompt",
@@ -894,6 +910,18 @@
       "ErrorResponse": {
         "description": "Uniform failure body for every error the service maps from the library.\n\n`provider_status` is the provider's own HTTP status when one was reported.\nIt is present for diagnosis and never equals the status of this response:\na provider 500 surfaces as a 502 here, and a provider 401 as a 502 too,\nsince callers hold no provider credentials.",
         "properties": {
+          "account_wide": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With a fallback_reason: true when every model on the same provider account would fail the same way (a spend cap, a rejected key), false when the failure is scoped to this model. Null when there is no reason.",
+            "title": "Account Wide"
+          },
           "detail": {
             "description": "Human-readable cause.",
             "title": "Detail",
@@ -925,7 +953,7 @@
                 "type": "null"
               }
             ],
-            "description": "Why the provider failure might be served by another model: unavailable, rate_limited, quota_exhausted, or model_unavailable. Null when another model would fail the same way (a validation or authentication error, a timeout). On a deployment with a fallback chain, the failure is from the last model tried.",
+            "description": "Why the provider failure might be served by another model: unavailable, rate_limited, quota_exhausted, auth_rejected, model_unavailable, or timeout. Null when another model would fail the same way (a validation error, a refusal). On a deployment with a fallback chain, the failure is from the last model tried.",
             "title": "Fallback Reason"
           },
           "provider_status": {
@@ -1557,6 +1585,22 @@
             "description": "JSON schema the completion must validate against.",
             "title": "Response Schema",
             "type": "object"
+          },
+          "retry_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "default",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's COMPLETIONS_RETRY_POLICY.",
+            "title": "Retry Policy"
           },
           "system_prompt": {
             "anyOf": [
@@ -2264,7 +2308,7 @@
   "info": {
     "description": "HTTP interface to the ai-api-unified Python library. Breaking API changes bump the URI version (/v1 -> /v2); the service itself follows semantic versioning independently.",
     "title": "ai-api-unified-http",
-    "version": "1.11.0"
+    "version": "1.12.0"
   },
   "openapi": "3.1.0",
   "paths": {

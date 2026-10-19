@@ -858,6 +858,11 @@ export interface components {
             prompt_cache?: components["schemas"]["PromptCache"] | null;
             /** Request Timeout Seconds */
             request_timeout_seconds?: number | null;
+            /**
+             * Retry Policy
+             * @description 'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's COMPLETIONS_RETRY_POLICY.
+             */
+            retry_policy?: ("default" | "none") | null;
             /** System Prompt */
             system_prompt: string;
             /**
@@ -967,6 +972,11 @@ export interface components {
          */
         ErrorResponse: {
             /**
+             * Account Wide
+             * @description With a fallback_reason: true when every model on the same provider account would fail the same way (a spend cap, a rejected key), false when the failure is scoped to this model. Null when there is no reason.
+             */
+            account_wide?: boolean | null;
+            /**
              * Detail
              * @description Human-readable cause.
              */
@@ -983,7 +993,7 @@ export interface components {
             error: string;
             /**
              * Fallback Reason
-             * @description Why the provider failure might be served by another model: unavailable, rate_limited, quota_exhausted, or model_unavailable. Null when another model would fail the same way (a validation or authentication error, a timeout). On a deployment with a fallback chain, the failure is from the last model tried.
+             * @description Why the provider failure might be served by another model: unavailable, rate_limited, quota_exhausted, auth_rejected, model_unavailable, or timeout. Null when another model would fail the same way (a validation error, a refusal). On a deployment with a fallback chain, the failure is from the last model tried.
              */
             fallback_reason?: string | null;
             /**
@@ -1283,6 +1293,11 @@ export interface components {
             response_schema: {
                 [key: string]: unknown;
             };
+            /**
+             * Retry Policy
+             * @description 'none' sends one attempt per model instead of the provider's own retry schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a timeout twice). Pair it with a short request_timeout_seconds on a deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung model fails over in seconds rather than after three full deadlines. Omit it for the deployment's COMPLETIONS_RETRY_POLICY.
+             */
+            retry_policy?: ("default" | "none") | null;
             /** System Prompt */
             system_prompt?: string | null;
         };

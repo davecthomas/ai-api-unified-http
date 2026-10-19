@@ -94,10 +94,15 @@ EMBEDDING_MODEL_NAME=gemini-embedding-001
 # The service refuses to start if a pair names an unknown engine.
 # COMPLETIONS_FALLBACKS=openai:gpt-5.6-luna,google-gemini:gemini-3.7-flash
 # Reasons that trigger a fallback. Default:
-# unavailable,rate_limited,quota_exhausted. Add model_unavailable to also
-# fail over on an unknown or retired model id, which is off by default
-# because it usually means a typo that a working fallback would hide.
-# COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted
+# unavailable,rate_limited,quota_exhausted,auth_rejected. Add model_unavailable
+# to also fail over on an unknown or retired model id, which is off by default
+# because it usually means a typo that a working fallback would hide. Add
+# timeout to treat a hung provider as an outage; pair it with a short
+# request_timeout_seconds and COMPLETIONS_RETRY_POLICY=none (or a request's
+# "retry_policy": "none"), or the SDKs retry the timeout first.
+# COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted,auth_rejected
+# One attempt per model instead of the provider SDK's retries (default|none).
+# COMPLETIONS_RETRY_POLICY=none
 
 # Any server speaking the OpenAI Chat Completions protocol (vLLM, Ollama,
 # LiteLLM, a hosted vendor's compatible endpoint), reached with

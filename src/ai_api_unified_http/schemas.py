@@ -151,6 +151,15 @@ FALLBACK_DESCRIPTION: Final[str] = (
     "requested model will do. Has no effect on a deployment with no chain."
 )
 
+RETRY_POLICY_DESCRIPTION: Final[str] = (
+    "'none' sends one attempt per model instead of the provider's own retry "
+    "schedule (the Anthropic and OpenAI SDKs retry a 429, a 5xx, or a "
+    "timeout twice). Pair it with a short request_timeout_seconds on a "
+    "deployment whose COMPLETIONS_FALLBACK_ON includes 'timeout', so a hung "
+    "model fails over in seconds rather than after three full deadlines. "
+    "Omit it for the deployment's COMPLETIONS_RETRY_POLICY."
+)
+
 SERVED_BY_FALLBACK_DESCRIPTION: Final[str] = (
     "True when the requested model failed and a fallback answered. `engine` "
     "and `model` then name the fallback, and `usd_cost` is priced at it."
@@ -220,6 +229,9 @@ class StructuredRequest(EngineSelection):
         default=None, description=PROMPT_CACHE_DESCRIPTION
     )
     fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
+    retry_policy: Literal["default", "none"] | None = Field(
+        default=None, description=RETRY_POLICY_DESCRIPTION
+    )
 
 
 USD_COST_DESCRIPTION: Final[str] = (
@@ -366,6 +378,9 @@ class ConversationTurnRequest(EngineSelection):
         default=None, description=PROMPT_CACHE_DESCRIPTION
     )
     fallback: bool = Field(default=True, description=FALLBACK_DESCRIPTION)
+    retry_policy: Literal["default", "none"] | None = Field(
+        default=None, description=RETRY_POLICY_DESCRIPTION
+    )
 
 
 class EmbeddingsRequest(BaseModel):
@@ -787,10 +802,20 @@ class ErrorResponse(BaseModel):
         default=None,
         description=(
             "Why the provider failure might be served by another model: "
-            "unavailable, rate_limited, quota_exhausted, or model_unavailable. "
-            "Null when another model would fail the same way (a validation or "
-            "authentication error, a timeout). On a deployment with a "
-            "fallback chain, the failure is from the last model tried."
+            "unavailable, rate_limited, quota_exhausted, auth_rejected, "
+            "model_unavailable, or timeout. Null when another model would "
+            "fail the same way (a validation error, a refusal). On a "
+            "deployment with a fallback chain, the failure is from the last "
+            "model tried."
+        ),
+    )
+    account_wide: bool | None = Field(
+        default=None,
+        description=(
+            "With a fallback_reason: true when every model on the same "
+            "provider account would fail the same way (a spend cap, a "
+            "rejected key), false when the failure is scoped to this model. "
+            "Null when there is no reason."
         ),
     )
 

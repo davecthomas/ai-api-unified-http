@@ -398,6 +398,17 @@ def _route_of_result(
     )
 
 
+def _provider_options(retry_policy: str | None) -> dict[str, Any] | None:
+    """Build the per-call provider options a request asked for.
+
+    `retry_policy` is the library's reserved option key: every engine reads
+    it for that call and none forwards it to the provider.
+    """
+    if retry_policy is None:
+        return None
+    return {"retry_policy": retry_policy}
+
+
 def _pricing_client(client: Any, route: ServedRoute) -> Any:
     """Return the client whose rates price a call served on `route`.
 
@@ -785,6 +796,7 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
         **_optional(max_response_tokens=request.max_response_tokens),
         request_timeout_seconds=request.request_timeout_seconds,
         prompt_cache=_cache_hint(request.prompt_cache),
+        provider_options=_provider_options(request.retry_policy),
     )
     route: ServedRoute = _route_of_result(client, request.engine, request.model, result)
     return StructuredResponse(
@@ -840,6 +852,7 @@ async def conversation_turn(
             max_response_tokens=request.max_response_tokens,
             request_timeout_seconds=request.request_timeout_seconds,
             prompt_cache=_cache_hint(request.prompt_cache),
+            provider_options=_provider_options(request.retry_policy),
         )
     except ValueError as error:
         # Some models refuse any forced tool choice, and the library says so

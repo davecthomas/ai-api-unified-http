@@ -79,7 +79,7 @@ the misconfiguration is fixed succeeds without a restart.
 
 ## Model fallback
 
-Library 2.32.0 adds a fallback chain: `AIFactory.get_ai_completions_client`
+Library 2.32.0 added a fallback chain (pinned now at 2.35.0): `AIFactory.get_ai_completions_client`
 returns an `AiFallbackCompletions` wrapping the primary engine when
 `COMPLETIONS_FALLBACKS` (or a `fallbacks=` argument) names candidates, and a
 request whose failure carries a `fallback_reason` in `COMPLETIONS_FALLBACK_ON`
@@ -146,7 +146,25 @@ in place of the caller's message. A model without tool-use support refuses
 `extend_messages_with_turn`, and its turn is still encoded as v1. v1 tokens
 remain accepted.
 
-**Why the pin is 2.32.1.** On 2.32.0 a turn that failed over from Claude to
+**Library 2.33.0 to 2.35.0.** The service passes these through without
+logic of its own, beyond the error-body fields above:
+
+- 2.33.0 adds `auth_rejected` to the default reasons and skips the rest of an
+  account's candidates after an account-wide failure. The service's startup
+  check and log line take the default set from the library, so they follow.
+- 2.34.0 adds an opt-in `timeout` reason. It only works with a short deadline
+  and no SDK retries, so `/v1/structured` and `/v1/conversations/turn` take
+  `retry_policy`, sent as the library's reserved `provider_options` key. The
+  text-prompt calls have no per-call retry setting in the library, so
+  `/v1/completions` relies on the deployment's `COMPLETIONS_RETRY_POLICY`.
+  The field is not offered there, because a per-request value it ignored
+  would be worse than none.
+- 2.35.0 lets a turn whose history is engine-shaped fail over within that
+  engine family. Nothing changes here: the route stamp already names the
+  model that served, and `served_by_fallback` compares it with the requested
+  primary, so an Opus turn served by Sonnet reports Sonnet and prices at it.
+
+**Why 2.32.1 was required.** On 2.32.0 a turn that failed over from Claude to
 OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
 `{"role": "assistant", "content": "...", "annotations": []}`, the wrapper read
 that history as provider-neutral and started the next turn at Claude, and
@@ -371,7 +389,8 @@ message text.
 | `AiProviderRequestError` | provider 401 / 403 | 502 | `provider_auth_failed` |
 | `AiProviderRequestError` | provider 5xx | 502 | `provider_error` |
 | `AiProviderRequestError` | other provider 4xx | 400 | `provider_rejected_request` |
-| `AiProviderRequestError` | no status (connection error, client timeout) | 502 | `provider_unavailable` |
+| `AiProviderRequestError` | no status, `fallback_reason` `timeout` (the call's deadline passed) | 504 | `provider_timeout` |
+| `AiProviderRequestError` | no status (connection error) | 502 | `provider_unavailable` |
 | `AiProviderConfigurationError` | retired model, bad config | 400 | `invalid_request` |
 | `AiProviderCapabilityUnsupportedError` | engine cannot do it | 400 | `invalid_request` |
 | `AiProviderDependencyUnavailableError` | provider SDK not installed | 503 | `provider_dependency_unavailable` |
@@ -380,8 +399,15 @@ message text.
 | Request validation | malformed body | 422 | FastAPI default |
 
 Every mapped failure returns the same body: `error`, `detail`, `engine`,
-`provider_status`, and `fallback_reason` (the library's `AiFallbackReason`
-value from 2.31.0, or null). `provider_status` is the provider's status when one was
+`provider_status`, `fallback_reason` (the library's `AiFallbackReason`
+value from 2.31.0, or null), and `account_wide` (from 2.33.0: whether every
+model on that provider account would fail the same way; null when there is no
+reason, since the library's default then says nothing about the account).
+
+A timeout is split out from other status-less failures because 2.34.0 labels
+it. Before that, a client-side timeout and a refused connection were the same
+502. A 504 tells a caller the provider was slow rather than down, which is
+the signal for whether a longer `request_timeout_seconds` would help. `provider_status` is the provider's status when one was
 reported, and never equals the response status — a provider 500 surfaces as a
 502 here.
 

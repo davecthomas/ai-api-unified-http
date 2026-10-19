@@ -10,6 +10,7 @@ because callers never hold provider keys and can do nothing about either.
 
 import pytest
 from ai_api_unified import (
+    AiFallbackReason,
     AiProviderCapabilityUnsupportedError,
     AiProviderRequestError,
     StructuredResponseTokenLimitError,
@@ -64,6 +65,26 @@ _EXCEPTIONS: dict[str, Exception] = {
         "unknown model", status_code=400, provider_engine="google-gemini"
     ),
     "no_status": AiProviderRequestError("connection reset", provider_engine="claude"),
+    # The library's own classification, from 2.34.0 for a timeout.
+    "timeout": AiProviderRequestError(
+        "read timed out",
+        provider_engine="openai",
+        fallback_reason=AiFallbackReason.TIMEOUT,
+    ),
+    "spend_cap": AiProviderRequestError(
+        "workspace API usage limits",
+        status_code=400,
+        provider_engine="claude",
+        fallback_reason=AiFallbackReason.QUOTA_EXHAUSTED,
+        account_wide=True,
+    ),
+    "gemini_daily_quota": AiProviderRequestError(
+        "daily quota",
+        status_code=429,
+        provider_engine="google-gemini",
+        fallback_reason=AiFallbackReason.QUOTA_EXHAUSTED,
+        account_wide=False,
+    ),
     "config": AiProviderConfigurationError("model retired"),
     "capability": AiProviderCapabilityUnsupportedError("engine cannot stream"),
     "dependency": AiProviderDependencyUnavailableError("boto3 not installed"),
@@ -90,6 +111,7 @@ _EXCEPTIONS: dict[str, Exception] = {
         ("provider_500", 502, "provider_error"),
         ("provider_400", 400, "provider_rejected_request"),
         ("no_status", 502, "provider_unavailable"),
+        ("timeout", 504, "provider_timeout"),
         ("config", 400, "invalid_request"),
         ("capability", 400, "invalid_request"),
         ("dependency", 503, "provider_dependency_unavailable"),
@@ -127,6 +149,24 @@ def test_provider_status_is_reported_without_becoming_the_response_status(
     assert body["engine"] == "openai"
 
 
+@pytest.mark.parametrize(
+    "kind,reason,account_wide",
+    [
+        ("spend_cap", "quota_exhausted", True),
+        ("gemini_daily_quota", "quota_exhausted", False),
+        ("timeout", "timeout", False),
+        # No reason, so no claim about the account either.
+        ("provider_400", None, None),
+    ],
+)
+def test_the_body_carries_the_librarys_classification(
+    client: TestClient, kind: str, reason: str | None, account_wide: bool | None
+) -> None:
+    body = client.get(f"/boom/{kind}").json()
+    assert body["fallback_reason"] == reason
+    assert body["account_wide"] is account_wide
+
+
 def test_token_limit_detail_names_the_minimum_that_would_work(
     client: TestClient,
 ) -> None:
@@ -146,6 +186,7 @@ def test_error_body_shape_is_uniform(client: TestClient) -> None:
             "engine",
             "provider_status",
             "fallback_reason",
+            "account_wide",
         }
         assert isinstance(body["error"], str) and body["error"]
         assert isinstance(body["detail"], str) and body["detail"]
@@ -216,6 +257,7 @@ class TestErrorEnvelope:
             "engine",
             "provider_status",
             "fallback_reason",
+            "account_wide",
         }
         assert body["error"] == "internal_error"
 
