@@ -15,6 +15,7 @@ and the result stamps the service reads are the ones the library produces.
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,6 +31,11 @@ from ai_api_unified import (
     AITurnResult,
 )
 from ai_api_unified.ai_base import AIBaseCompletions, AICompletionsCapabilitiesBase
+from ai_api_unified.middleware.observability_runtime import (
+    AiApiCallContextModel,
+    AiApiCallResultSummaryModel,
+)
+from ai_api_unified.middleware.request_cost import record_call_line_item
 from fastapi.testclient import TestClient
 
 from ai_api_unified_http import clients
@@ -62,6 +68,7 @@ class _Engine(AIBaseCompletions):
         fail: Exception | None = None,
         fail_on_prompt: str | None = None,
         family: str = "anthropic",
+        engine: str | None = None,
     ) -> None:
         super().__init__(model=name)
         self.fail = fail
@@ -69,6 +76,9 @@ class _Engine(AIBaseCompletions):
         # itself and hands others to its fallback.
         self.fail_on_prompt = fail_on_prompt
         self.FALLBACK_ENGINE_FAMILY = family
+        # The engine token this fake meters under; the chain helpers set it
+        # to the candidate's token, as a real engine's token matches its own.
+        self.engine_token: str | None = engine
 
     def _check(self) -> None:
         if self.fail is not None:
@@ -109,8 +119,37 @@ class _Engine(AIBaseCompletions):
             self._check()
             yield f"{self.model}-1"
             yield f"{self.model}-2"
+            self._meter("send_prompt_streaming")
 
         return _gen()
+
+    def _meter(self, operation: str) -> None:
+        """Record the line item a real engine's observed call leaves behind.
+
+        The fakes bypass the library's observability runtime, which is what
+        puts a line item on the open request scope. The service reads which
+        model served a stream from that scope, so a fake that streams meters
+        itself the way an engine does. The engine token is the chain's label
+        for this family, which is what a real engine reports.
+        """
+        engine: str = self.engine_token or {"anthropic": "claude"}.get(
+            self.FALLBACK_ENGINE_FAMILY, self.FALLBACK_ENGINE_FAMILY
+        )
+        record_call_line_item(
+            call_context=AiApiCallContextModel(
+                call_id=f"{self.model}-{operation}",
+                event_time_utc=datetime.now(UTC),
+                capability="completions",
+                operation=operation,
+                provider_vendor=self.FALLBACK_ENGINE_FAMILY,
+                provider_engine=engine,
+                model_name=str(self.model),
+                model_version=None,
+                direction="output",
+            ),
+            call_result_summary=AiApiCallResultSummaryModel(provider_elapsed_ms=1.0),
+            float_elapsed_ms=1.0,
+        )
 
     def count_tokens(self, prompt: str, **kwargs: Any) -> int:
         return 1
@@ -145,8 +184,17 @@ class _Engine(AIBaseCompletions):
         )
 
 
-def _chain(primary: _Engine, fallback: _Engine) -> AiFallbackCompletions:
-    """The library's wrapper: claude:primary first, then openai:fallback."""
+def _chain(
+    primary: _Engine, fallback: _Engine, *, cooldown: bool | None = None
+) -> AiFallbackCompletions:
+    """The library's wrapper: claude:primary first, then openai:fallback.
+
+    `cooldown=False` keeps every request starting at the primary. The
+    library's default (None) benches a candidate that failed, so a later
+    request in the same test starts at the fallback; see TestCooldown.
+    """
+    primary.engine_token = primary.engine_token or "claude"
+    fallback.engine_token = fallback.engine_token or "openai"
     return AiFallbackCompletions(
         primary=primary,
         primary_candidate=AIFallbackCandidate(engine="claude", model=primary.model),
@@ -154,14 +202,29 @@ def _chain(primary: _Engine, fallback: _Engine) -> AiFallbackCompletions:
             AIFallbackCandidate(engine="openai", model=str(fallback.model))
         ],
         client_builder=lambda candidate: fallback,
+        cooldown=cooldown,
     )
 
 
+def _unpriced() -> MagicMock:
+    """A plain client with no rates on record, so a call priced at it is null."""
+    plain = MagicMock()
+    plain.capabilities.pricing.token_rates = None
+    return plain
+
+
 def _route_pool(wrapper: Any, plain: dict[tuple[str, str | None], Any]) -> Any:
-    """Stand in for the pool: the wrapper for fallback=True, plain otherwise."""
+    """Stand in for the pool: the wrapper for fallback=True, plain otherwise.
+
+    A plain client not in `plain` is an unpriced one: every generation route
+    prices a fallback-served call at the plain client for that fallback, and
+    a test that is not about pricing should not have to supply one.
+    """
 
     def _get(engine: str, model: str | None = None, *, fallback: bool = False) -> Any:
-        return wrapper if fallback else plain[(engine, model)]
+        if fallback:
+            return wrapper
+        return plain.get((engine, model)) or _unpriced()
 
     return patch("ai_api_unified_http.routes_v1.get_completions_client", _get)
 
@@ -193,6 +256,54 @@ class TestPoolCarriesTheChain:
             ("openai", "gpt-4o-mini"),
             ("bedrock", "amazon.nova-lite-v1:0"),
         ]
+
+    def test_the_chain_is_read_from_models_json(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Library 3.2.0 moved the chain to completions.fallbacks in
+        # models.json. The service reads it through the library's resolver,
+        # so a deployment that migrated its .env keeps its fallback rather
+        # than silently running without one.
+        monkeypatch.delenv(COMPLETIONS_FALLBACKS_ENV, raising=False)
+        monkeypatch.setenv(
+            "AI_MODELS_CONFIG",
+            json.dumps(
+                {
+                    "completions": {
+                        "engine": "claude",
+                        "fallbacks": ["openai:gpt-5.6-luna", "google-gemini:"],
+                    }
+                }
+            ),
+        )
+        with patch(
+            "ai_api_unified_http.clients.AIFactory.get_ai_completions_client"
+        ) as factory:
+            clients.get_completions_client("claude", "claude-opus-5", fallback=True)
+
+        chain = factory.call_args.kwargs["fallbacks"]
+        assert [c.engine for c in chain] == ["openai", "google-gemini"]
+        assert chain[0].model == "gpt-5.6-luna"
+
+    def test_the_environment_key_still_wins_over_the_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The library keeps the deprecated key as an override, with a warning,
+        # so a deployment pinning one value in its environment is not broken
+        # by a file that says otherwise.
+        monkeypatch.setenv(COMPLETIONS_FALLBACKS_ENV, "openai:from-env")
+        monkeypatch.setenv(
+            "AI_MODELS_CONFIG",
+            json.dumps(
+                {"completions": {"engine": "claude", "fallbacks": ["openai:from-file"]}}
+            ),
+        )
+        with patch(
+            "ai_api_unified_http.clients.AIFactory.get_ai_completions_client"
+        ) as factory:
+            clients.get_completions_client("claude", "claude-opus-5", fallback=True)
+
+        assert [c.model for c in factory.call_args.kwargs["fallbacks"]] == ["from-env"]
 
     def test_plain_clients_never_get_the_chain(
         self, monkeypatch: pytest.MonkeyPatch
@@ -276,12 +387,10 @@ class TestCompletions:
             response = client.post(PATH, json={"engine": "claude", "prompt": "hi"})
 
         assert response.status_code == 200
-        assert response.json() == {
-            "text": "mini:text",
-            "engine": "openai",
-            "model": "mini",
-            "served_by_fallback": True,
-        }
+        body = response.json()
+        assert body["text"] == "mini:text"
+        assert (body["engine"], body["model"]) == ("openai", "mini")
+        assert body["served_by_fallback"] is True
 
     def test_a_primary_answer_reports_the_request(self, client: TestClient) -> None:
         wrapper = _chain(_Engine("opus"), _Engine("mini"))
@@ -314,8 +423,12 @@ class TestCompletions:
         # One pooled client serves every request, interleaved on the loop. Its
         # "last route" belongs to whichever call finished last, which a stream
         # or a threadpool call can read after another request moved it. Each
-        # request here has to report the route of its own call.
-        shared = _chain(_Engine("opus", fail_on_prompt="bad"), _Engine("mini"))
+        # request here has to report the route of its own call. Cooldowns are
+        # off so the primary is asked every time; with them on, its first
+        # failure would bench it and every later request would go to mini.
+        shared = _chain(
+            _Engine("opus", fail_on_prompt="bad"), _Engine("mini"), cooldown=False
+        )
 
         async def _both() -> list[dict[str, Any]]:
             import httpx
@@ -383,6 +496,68 @@ class TestCompletions:
         body = response.json()
         assert body["engine"] == "openai"
         assert body["fallback_reason"] == "quota_exhausted"
+
+
+class TestCooldown:
+    """Library 3.7.0: a candidate that failed rests, and requests skip it.
+
+    The bench is the library's and process-wide. What the service owns is
+    telling the caller the truth about such a request: it was served by the
+    fallback, although the requested model was never asked and would have
+    answered. The conftest resets the benches between tests.
+    """
+
+    def test_a_request_during_the_rest_starts_on_the_fallback(
+        self, client: TestClient
+    ) -> None:
+        # The first prompt fails on opus, which benches it for 30 seconds.
+        # The second would succeed on opus, and still goes to mini.
+        wrapper = _chain(_Engine("opus", fail_on_prompt="bad"), _Engine("mini"))
+        with _route_pool(wrapper, {}):
+            first = client.post(PATH, json={"engine": "claude", "prompt": "bad"})
+            second = client.post(PATH, json={"engine": "claude", "prompt": "ok"})
+
+        assert first.json()["text"] == "mini:text"
+        assert second.json()["text"] == "mini:text"
+        assert second.json()["engine"] == "openai"
+        assert second.json()["served_by_fallback"] is True
+
+    def test_a_stream_during_the_rest_names_the_fallback(
+        self, client: TestClient
+    ) -> None:
+        # A stream has no result envelope, and the chain logs no failover
+        # when it merely skips a resting primary. The service reads the
+        # served model from the request cost scope it opens around the
+        # stream, which the chain joins; the fake engine meters the stream
+        # the way a real one does.
+        wrapper = _chain(_Engine("opus", fail_on_prompt="bad"), _Engine("mini"))
+        with _route_pool(wrapper, {}):
+            client.post(PATH, json={"engine": "claude", "prompt": "bad"})
+            response = client.post(
+                PATH, json={"engine": "claude", "prompt": "ok", "stream": True}
+            )
+
+        frames = [
+            line.removeprefix("data: ")
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        done = json.loads(frames[-1])
+        assert "mini-1" in response.text
+        assert done["engine"] == "openai"
+        assert done["model"] == "mini"
+        assert done["served_by_fallback"] is True
+
+    def test_a_deployment_can_turn_cooldowns_off(self, client: TestClient) -> None:
+        wrapper = _chain(
+            _Engine("opus", fail_on_prompt="bad"), _Engine("mini"), cooldown=False
+        )
+        with _route_pool(wrapper, {}):
+            client.post(PATH, json={"engine": "claude", "prompt": "bad"})
+            second = client.post(PATH, json={"engine": "claude", "prompt": "ok"})
+
+        assert second.json()["text"] == "opus:text"
+        assert second.json()["served_by_fallback"] is False
 
 
 def _priced(model: str, input_per_1m: str) -> MagicMock:
@@ -458,6 +633,8 @@ class TestTypedResults:
 def _chain_of(*candidates: tuple[str, _Engine]) -> AiFallbackCompletions:
     """The library's wrapper over (engine token, engine) pairs, in order."""
     by_label = {f"{engine}:{client.model}": client for engine, client in candidates}
+    for engine, client in candidates:
+        client.engine_token = client.engine_token or engine
     (primary_engine, primary), *rest = candidates
     return AiFallbackCompletions(
         primary=primary,
@@ -566,6 +743,43 @@ class TestLibrary235:
                 json={"engine": "claude", "system_prompt": "s", "messages": []},
             )
         assert fake.asend_conversation.call_args.kwargs["provider_options"] is None
+
+    @pytest.mark.parametrize("path", ["/v1/structured", "/v1/conversations/turn"])
+    def test_a_thinking_level_is_the_reserved_provider_option(
+        self, client: TestClient, path: str
+    ) -> None:
+        # Library 3.5.0: conversation and structured calls take the per-call
+        # level as the reserved `thinking_level` option, read by every engine
+        # for that call and forwarded to none, like retry_policy.
+        fake = MagicMock()
+        fake.asend_structured_output = AsyncMock(
+            return_value=AIStructuredOutputResult(
+                data={}, finish_reason=AIFinishReason.COMPLETE, raw_text="{}"
+            )
+        )
+        fake.asend_conversation = AsyncMock(
+            return_value=AITurnResult(finish_reason=AIFinishReason.COMPLETE)
+        )
+        body: dict[str, Any] = {
+            "engine": "claude",
+            "thinking": "high",
+            "retry_policy": "none",
+        }
+        if path == "/v1/structured":
+            body |= {"prompt": "x", "response_schema": {}}
+            method = fake.asend_structured_output
+        else:
+            body |= {"system_prompt": "s", "messages": []}
+            method = fake.asend_conversation
+        with patch(
+            "ai_api_unified_http.routes_v1.get_completions_client", return_value=fake
+        ):
+            assert client.post(path, json=body).status_code == 200
+
+        assert method.call_args.kwargs["provider_options"] == {
+            "retry_policy": "none",
+            "thinking_level": "high",
+        }
 
     def test_an_unknown_retry_policy_is_refused(self, client: TestClient) -> None:
         response = client.post(

@@ -18,13 +18,14 @@ record: 2026-08-04.
 ## Hard requirements
 
 1. **The library does not change to support this service.** The service pins a
-   published PyPI release (`ai-api-unified==2.35.0`) and consumes only its
+   published PyPI release (`ai-api-unified==3.22.0`) and consumes only its
    public API. Library improvements that would simplify the service
    (async streaming, a pluggable cost sink) are tracked as future library work,
    not prerequisites.
-2. **Middleware is service-owned.** One middleware YAML owned by the service
-   deployment configures the library's observability and PII redaction for
-   every call. Observability with cost emission is on in the shipped profile;
+2. **Middleware is service-owned.** One middleware list owned by the service
+   deployment (the `middleware` section of `config/models.json`) configures
+   the library's observability and PII redaction for every call.
+   Observability with cost emission is on in the shipped profile;
    PII redaction is a per-deployment choice, off by default so the streaming
    endpoint works, since the library will not stream while redaction is on.
 3. **Cost events reach a durable destination.** The library emits per-call cost
@@ -34,11 +35,13 @@ record: 2026-08-04.
 4. **Provider keys live only in the service environment.** Web apps
    authenticate to the service; they never hold OpenAI/Anthropic/Google
    credentials.
-5. **Environment variable names match the library's** (`COMPLETIONS_ENGINE`,
-   `COMPLETIONS_MODEL_NAME`, `ANTHROPIC_API_KEY`, ...) so a working library
-   `.env` works here unchanged.
-6. **Configuration is never committed.** `.env` is gitignored; the committed
+5. **Configuration is the library's own.** Secrets use the library's variable
+   names (`ANTHROPIC_API_KEY`, ...) so a working library `.env` works here
+   unchanged, and model selections use the library's `models.json` format, so
+   its validator, schema, and migrator apply.
+6. **Secrets are never committed.** `.env` is gitignored; the committed
    `env_template` documents every variable and matches the README setup steps.
+   `config/models.json` is committed because it holds no secrets.
 
 ## v1 scope
 

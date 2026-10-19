@@ -18,12 +18,8 @@
       "description": "Google Gemini key, for the 'google-gemini' engine. Leave blank if unused.",
       "required": false
     },
-    "COMPLETIONS_ENGINE": {
-      "description": "Default completions engine when a request omits one.",
-      "value": "claude"
-    },
     "COMPLETIONS_FALLBACKS": {
-      "description": "Optional. Ordered engine:model pairs a request is retried on when its model is overloaded, rate limited, or out of quota, e.g. 'openai:gpt-5.6-luna,google-gemini'. Each needs its provider key above. Leave blank for no fallback.",
+      "description": "Optional. Overrides completions.fallbacks in the image's config/models.json: ordered engine:model pairs a request is retried on when its model is overloaded, rate limited, or out of quota, e.g. 'openai:gpt-5.6-luna,google-gemini'. Each needs its provider key above. Leave blank for the file's chain (none as shipped).",
       "required": false
     },
     "HTTP_RATE_LIMIT": {

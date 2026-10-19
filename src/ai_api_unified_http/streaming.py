@@ -25,6 +25,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any, Final
 
+from ai_api_unified import AIRequestCostReport, request_cost_scope
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from .fallback import ServedRoute
@@ -66,31 +67,43 @@ async def sse_from_sync_iterator(
     chunks: Iterator[str],
     engine: str,
     model: str | None,
-    route: Callable[[], ServedRoute] | None = None,
+    route: Callable[[AIRequestCostReport | None], ServedRoute] | None = None,
 ) -> AsyncIterator[str]:
     """Bridge the library's blocking text iterator onto an SSE byte stream.
+
+    The whole stream runs inside one of the library's request cost scopes.
+    A fallback chain joins it, so every provider call made for the stream
+    lands on it as a line item, and the report that closes it names the call
+    whose answer was returned. That is how the terminal event learns which
+    model served when the chain started past a resting primary, which no
+    log record announces. The scope travels to the worker thread with the
+    context `iterate_in_threadpool` copies for each step.
 
     Args:
         chunks: The library's synchronous chunk iterator.
         engine: Engine token, echoed in the terminal event for attribution.
         model: Model name, echoed in the terminal event.
-        route: Reports which model served the stream, read once the stream
-            has ended. A fallback chain decides that at the first chunk, so
-            the terminal event is the first point it is known for certain.
+        route: Reports which model served the stream, given the request cost
+            report once the stream has ended. A fallback chain decides that
+            at the first chunk, so the terminal event is the first point it
+            is known for certain.
 
     Yields:
         str: SSE frames — zero or more `chunk` events, then exactly one
             terminal `done` or `error` event.
     """
     chunk_count: int = 0
+    report: AIRequestCostReport | None = None
     try:
-        async for chunk in iterate_in_threadpool(chunks):
-            if not chunk:
-                # Providers emit empty keep-alive chunks; forwarding them
-                # would show as spurious empty updates in a browser client.
-                continue
-            chunk_count += 1
-            yield format_sse(EVENT_CHUNK, {"text": chunk})
+        with request_cost_scope("send_prompt_streaming") as scope:
+            async for chunk in iterate_in_threadpool(chunks):
+                if not chunk:
+                    # Providers emit empty keep-alive chunks; forwarding them
+                    # would show as spurious empty updates in a browser client.
+                    continue
+                chunk_count += 1
+                yield format_sse(EVENT_CHUNK, {"text": chunk})
+        report = scope.report
     except Exception as error:  # noqa: BLE001 - the status line is already sent
         # A buffered call would map this to a 502. Here the 200 is committed,
         # so the failure has to travel in-band as the stream's last event.
@@ -111,7 +124,7 @@ async def sse_from_sync_iterator(
         )
         return
 
-    served: ServedRoute = route() if route else ServedRoute(engine, model)
+    served: ServedRoute = route(report) if route else ServedRoute(engine, model)
     yield format_sse(
         EVENT_DONE,
         {

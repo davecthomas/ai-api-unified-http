@@ -22,12 +22,12 @@ from .auth import ApiKeyAuthMiddleware, verify_auth_configured
 from .caller_context import CallerContextMiddleware
 from .config import load_env_file
 from .cost import (
-    apply_default_middleware_config,
+    apply_default_models_config,
     attach_cost_handler,
     verify_cost_capture,
 )
 from .errors import EXCEPTION_HANDLERS, ErrorEnvelopeMiddleware
-from .fallback import install_route_filter, verify_fallback_config
+from .fallback import verify_fallback_config
 from .logging_setup import configure_logging
 from .rate_limit import RateLimitMiddleware, rate_limit, window_seconds
 from .request_limits import RequestSizeLimitMiddleware, max_request_bytes
@@ -76,16 +76,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.getLevelName(level),
     )
 
-    # The middleware profile has to be resolved first: it decides both whether
-    # the library emits cost events and which topic it publishes them on.
-    apply_default_middleware_config()
+    # The configuration file has to be resolved first: its middleware section
+    # decides both whether the library emits cost events and which topic it
+    # publishes them on.
+    apply_default_models_config()
     attach_cost_handler()
     verify_cost_capture()
     verify_auth_configured()
 
-    # The route filter reports which model served a request when a fallback
-    # answered; the check refuses a chain naming an engine that does not exist.
-    install_route_filter()
+    # Refuses a chain naming an engine or a reason that does not exist.
     verify_fallback_config()
 
     limit: int = rate_limit()

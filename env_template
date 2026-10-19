@@ -2,8 +2,12 @@
 #   ai-api-unified-http — service configuration
 #   Copy this file to .env and fill in only the providers you use.
 #   .env is gitignored; never commit real keys.
-#   Variable names are identical to the ai-api-unified library's so a
-#   .env that works for the library works here unchanged.
+#
+#   This file holds secrets and the service's own settings. Engines, default
+#   models, the fallback chain, the thinking level, the voice engine, and the
+#   middleware profile live in config/models.json, the library's models.json
+#   format. Variable names are identical to the ai-api-unified library's, so
+#   a .env that works for the library works here unchanged.
 ########################################################################
 
 # --- Service ---
@@ -42,9 +46,10 @@ LOG_LEVEL=INFO
 # HTTP_AUTH_DISABLED=1
 
 # --- Cost-event capture (required; the service refuses to start without it) ---
-# Every provider call emits a cost event. The service attaches a handler to
-# the library's cost topic at startup and fails loudly if nothing is listening,
-# because a dropped event is spend with no record of who incurred it.
+# Every provider call emits a cost event, and every request emits one more
+# that totals its calls. The service attaches a handler to the library's cost
+# topic at startup and fails loudly if nothing is listening, because a dropped
+# event is spend with no record of who incurred it.
 # Sink file for cost events, one JSON object per line. Parent dirs are created.
 # HTTP_COST_LOG_PATH=cost-events.jsonl
 # Logger the library emits cost events on. Set this only if the library's
@@ -55,68 +60,32 @@ LOG_LEVEL=INFO
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GOOGLE_GEMINI_API_KEY=
-GOOGLE_AUTH_METHOD=api_key
-
-# --- Middleware profile ---
-# The library reads one process-wide profile from this path. Unset, the service
-# defaults to config/middleware.yaml, which enables observability with cost
-# emission and leaves PII redaction OFF so the streaming endpoint works.
-# Enabling redaction there makes streaming return 400; see the README.
-# AI_MIDDLEWARE_CONFIG_PATH=config/middleware.yaml
-
-# --- Engine defaults (per-request values override these) ---
-# Completions engine (openai | openai-responses | claude | google-gemini | openai-compatible)
-COMPLETIONS_ENGINE=claude
-# Embedding engine (openai | google-gemini | voyage)
-EMBEDDING_ENGINE=google-gemini
-
-# Completions model name, by engine. Leave unset to use the engine default
-# (one generation behind the newest catalogued model):
-#   openai:        default gpt-5.6-luna    | gpt-6-astra | gpt-6-sol | gpt-6-luna | gpt-5.6-sol | gpt-5.6-terra | gpt-5.5
-#   claude:        default claude-opus-5   | claude-opus-5-5 | claude-fable-5-1 | claude-sonnet-5 | claude-opus-4-8 | claude-haiku-4-5
-#   google-gemini: default gemini-3.7-flash | gemini-3.8-flash | gemini-3.6-flash | gemini-3.5-flash-lite | gemini-3.1-pro-preview
-#   openai-compatible: no default; callers name the model per request
-# Comment this out entirely to take the engine's default model. An empty
-# assignment is NOT the same as unset: the library forwards the empty string
-# and the provider rejects it ("model: String should have at least 1
-# character"). A value here must also belong to COMPLETIONS_ENGINE — a Gemini
-# model name against the claude engine reaches Anthropic and returns 404.
-# COMPLETIONS_MODEL_NAME=
-EMBEDDING_MODEL_NAME=gemini-embedding-001
-
-# --- Model fallback ---
-# Ordered engine:model pairs a request is retried on when the requested model
-# is overloaded, rate limited past its backoff, or out of quota. Applies
-# behind whatever engine a request names; a pair naming the requested model
-# itself is skipped. Each fallback engine needs its own key above. The split
-# is on the first colon, so Bedrock ids such as bedrock:amazon.nova-lite-v1:0
-# work. Unset means no fallback. A request sends "fallback": false to opt out.
-# The service refuses to start if a pair names an unknown engine.
-# COMPLETIONS_FALLBACKS=openai:gpt-5.6-luna,google-gemini:gemini-3.7-flash
-# Reasons that trigger a fallback. Default:
-# unavailable,rate_limited,quota_exhausted,auth_rejected. Add model_unavailable
-# to also fail over on an unknown or retired model id, which is off by default
-# because it usually means a typo that a working fallback would hide. Add
-# timeout to treat a hung provider as an outage; pair it with a short
-# request_timeout_seconds and COMPLETIONS_RETRY_POLICY=none (or a request's
-# "retry_policy": "none"), or the SDKs retry the timeout first.
-# COMPLETIONS_FALLBACK_ON=unavailable,rate_limited,quota_exhausted,auth_rejected
-# One attempt per model instead of the provider SDK's retries (default|none).
-# COMPLETIONS_RETRY_POLICY=none
-
-# Any server speaking the OpenAI Chat Completions protocol (vLLM, Ollama,
-# LiteLLM, a hosted vendor's compatible endpoint), reached with
-# engine "openai-compatible". One server per deployment: the URL is read from
-# the environment, not the request.
-# OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
+# Key for a server reached with engine "openai-compatible" (vLLM, Ollama,
+# LiteLLM, a hosted vendor's compatible endpoint). Its URL and the rest of
+# its settings are providers.openai_compatible in config/models.json.
 # OPENAI_COMPATIBLE_API_KEY=
-# json_schema (default) or json_object, for servers without schema enforcement
-# OPENAI_COMPATIBLE_STRUCTURED_OUTPUT=json_schema
-# Context window of the served model, for the library's context guard
-# OPENAI_COMPATIBLE_CONTEXT_WINDOW=
 
-# Escalate deprecated-model use to a hard error (recommended in CI).
-# AI_STRICT_DEPRECATIONS=1
+# --- Model selections (config/models.json) ---
+# The service points the library at config/models.json when this is unset.
+# Name another file (.json, .yaml, .yml) or inline JSON to use instead; blank
+# turns the file off, and every selection then has to come from the keys
+# below. Validate a file with:
+#   poetry run python -m ai_api_unified.config_schema validate config/models.json
+# AI_MODELS_CONFIG=config/models.json
+# Pick an entry under "environments" in the file and merge it over the rest
+# (objects merge, lists and values replace). Unset uses the file as written.
+# AI_MODELS_ENV=prod
+#
+# The pre-3.x selection keys still work and win over the file, with one
+# deprecation warning per key at startup: COMPLETIONS_ENGINE,
+# COMPLETIONS_MODEL_NAME, COMPLETIONS_FALLBACKS, COMPLETIONS_FALLBACK_ON,
+# COMPLETIONS_RETRY_POLICY, EMBEDDING_ENGINE, EMBEDDING_MODEL_NAME,
+# AI_VOICE_ENGINE, GOOGLE_AUTH_METHOD, OPENAI_COMPATIBLE_BASE_URL,
+# OPENAI_COMPATIBLE_STRUCTURED_OUTPUT, OPENAI_COMPATIBLE_CONTEXT_WINDOW,
+# AI_STRICT_DEPRECATIONS, AI_MIDDLEWARE_CONFIG_PATH. Move them into the file
+# with the library's migrator (see the README). `make gcp-deploy FALLBACKS=...`
+# sets COMPLETIONS_FALLBACKS this way on purpose, so a deployment can name a
+# chain without editing the file.
 
 # Largest accepted request body in bytes; 0 disables the check. The rate limit
 # bounds how often a caller spends, not how much one call costs.
@@ -135,7 +104,3 @@ HTTP_ARTIFACT_DIR=artifacts
 # How long an artifact is served. The bucket's lifecycle rule does the actual
 # deleting; this stops the service serving something about to be removed.
 HTTP_ARTIFACT_TTL_SECONDS=86400
-
-# Voice engine for /v1/voices and /v1/speech. No default: unset, both answer
-# 503 naming this variable. Known values: openai, google.
-AI_VOICE_ENGINE=openai

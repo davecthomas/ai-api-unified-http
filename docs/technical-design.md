@@ -54,8 +54,10 @@ enforcement, and middleware stay in the library.
 ## Client pool
 
 `AIFactory.get_*` constructs a new provider client per call, and each
-construction re-reads `.env`, re-parses the middleware YAML, and (Gemini only)
-makes a `models.get` network round trip. The service therefore keeps a
+construction re-reads its configuration (`.env` and `models.json`) and, since
+library 3.6.0, probes the provider once to confirm the model is reachable
+(`model_check` in models.json; memoized per model and credential for the life
+of the process). The service therefore keeps a
 process-wide dict of engine clients keyed by `(engine, model)` (completions add
 whether the client carries the fallback chain; see "Model fallback"), built on first
 use and reused. Reuse is safe because engine instances hold no
@@ -79,18 +81,23 @@ the misconfiguration is fixed succeeds without a restart.
 
 ## Model fallback
 
-Library 2.32.0 added a fallback chain (pinned now at 2.35.0): `AIFactory.get_ai_completions_client`
+Library 2.32.0 added a fallback chain (pinned now at 3.22.0): `AIFactory.get_ai_completions_client`
 returns an `AiFallbackCompletions` wrapping the primary engine when
-`COMPLETIONS_FALLBACKS` (or a `fallbacks=` argument) names candidates, and a
-request whose failure carries a `fallback_reason` in `COMPLETIONS_FALLBACK_ON`
-is retried on the next one. The chain logic is entirely the library's. What
-the service owns is below.
+`completions.fallbacks` in models.json (or a `fallbacks=` argument) names
+candidates, and a request whose failure carries a `fallback_reason` in
+`completions.fallback_on` is retried on the next one. The chain logic is
+entirely the library's. What the service owns is below.
 
 **Which clients carry the chain.** The factory reads the setting whenever
 `fallbacks` is None, so leaving it to the factory would wrap every pooled
 client, including the ones batches, token counts, and the model catalogue use.
 The service always passes `fallbacks` explicitly: the parsed chain for the
-three generation routes, `[]` for everything else. The completions pool key
+three generation routes, `[]` for everything else. The chain is read through
+the library's own settings resolver (`EnvSettings.get_setting`), which
+consults the process environment, then `.env`, then `completions.fallbacks`
+in models.json; reading `os.environ` directly, as the service did before
+models.json existed, would run a deployment that moved its chain there with
+no fallback at all. The completions pool key
 grows a third part, `(engine, model, fallback)`, because the wrapper and the
 plain engine are different objects. A candidate naming exactly the requested
 model is dropped from that request's chain, since retrying an overloaded model
@@ -98,30 +105,35 @@ on itself spends a second call on the same failure. A request's
 `"fallback": false` selects the plain entry.
 
 **Which model served.** Responses report the engine and model that answered,
-not the ones requested, plus `served_by_fallback`. Conversation turns and
-structured calls read the route stamp the wrapper puts on `AITurnResult` and
-`AIStructuredOutputResult`. That stamp is the only reliable source for a turn:
-once history is engine-shaped the library pins the turn to that engine without
-failing over, so a fallback can serve a turn with no fallback event logged.
+not the ones requested, plus `served_by_fallback`. Every source is per call,
+because the wrapper's `last_route` is per-client state on a client every
+request shares: a stream, or a call that ran in the threadpool, can read it
+after another request has moved it.
 
-A text prompt returns a bare string, and the wrapper's `last_route` is
-per-client state on a client every request shares, so a stream, or a call that
-ran in the threadpool, can read it after another request has moved it.
-Instead, `fallback.py` attaches a filter to the library's fallback logger and
-copies the `served_by_fallback` record's `fallback_to` into a collector held
-in a ContextVar, which each request sets for itself. Starlette carries the
-request's context onto the threadpool workers that drive a stream, and the
-collector is a mutable object, so a record lands only in the collector of the
-request whose call logged it. No record means the primary served. The filter
-raises the logger to WARNING if the configured level would drop that record
-before any filter runs.
+- Conversation turns and structured calls read the route stamp the wrapper
+  puts on `AITurnResult` and `AIStructuredOutputResult`.
+- A buffered text prompt is sent with `asend_prompt_with_result` (library
+  3.16.0), whose `AIPromptResult` carries the same `provider_engine` and
+  `model_name`, filled from the wrapper's per-call ledger.
+- A stream has no envelope. `streaming.py` opens the library's
+  `request_cost_scope` around the whole stream; the wrapper joins it, each
+  provider call made for the stream lands on it as a line item, and the
+  report that closes the scope names the call whose answer was returned
+  (`served_by_engine`, `served_by_model`). The scope lives in a ContextVar,
+  which Starlette copies onto the threadpool worker for each step.
 
-The record's field names (`ai_fallback_event`, `fallback_to`) are documented
-in the library's README as a log-pipeline contract, and the service reads them
-the same way a pipeline would. `parse_fallback_candidates`, `FALLBACK_EVENT_SERVED`,
-and the provider registry's `get_ai_provider_spec` are public module-level
-names in the library, imported from their submodules because the package root
-does not re-export them.
+`fallback.served_route` compares what the library reported with the chain's
+resolved primary; a plain client (no chain) can only have served itself,
+whatever it reports. Before 3.7.0 the service read the wrapper's
+`served_by_fallback` log record instead. That record is written only when a
+candidate fails during the call, and with cooldowns a request can start on a
+fallback because the primary is resting, with no failure and no record: the
+log-based service reported such a request as served by the primary. The
+envelope and the scope cover both cases.
+
+`parse_fallback_candidates` and the provider registry's
+`get_ai_provider_spec` are public module-level names in the library, imported
+from their submodules because the package root does not re-export them.
 
 **Cost.** The wrapper reports the primary's capabilities, pricing included, so
 `usd_cost` for a fallback-served call is priced at a plain pooled client for
@@ -156,13 +168,37 @@ logic of its own, beyond the error-body fields above:
   and no SDK retries, so `/v1/structured` and `/v1/conversations/turn` take
   `retry_policy`, sent as the library's reserved `provider_options` key. The
   text-prompt calls have no per-call retry setting in the library, so
-  `/v1/completions` relies on the deployment's `COMPLETIONS_RETRY_POLICY`.
+  `/v1/completions` relies on the deployment's `completions.retry_policy`.
   The field is not offered there, because a per-request value it ignored
   would be worse than none.
 - 2.35.0 lets a turn whose history is engine-shaped fail over within that
   engine family. Nothing changes here: the route stamp already names the
   model that served, and `served_by_fallback` compares it with the requested
   primary, so an Opus turn served by Sonnet reports Sonnet and prices at it.
+
+**Library 3.0.0 to 3.22.0.** One pin step, taken in service 1.13.0. What the
+service adopted:
+
+- 3.2.0 and 3.11.0 move every model selection and the middleware profile into
+  `models.json`. The service ships `config/models.json` and defaults
+  `AI_MODELS_CONFIG` to it (`cost.apply_default_models_config`), in place of
+  the middleware YAML and `AI_MIDDLEWARE_CONFIG_PATH`. The deprecated
+  environment keys still win over the file, with a warning.
+- 3.5.0 turns thinking on at `medium` by default. The three generation routes
+  take `thinking`, sent as `other_params.thinking` on the text call and as the
+  reserved `thinking_level` provider option on the others.
+- 3.7.0 benches a failed candidate. That broke the log-record route tracking
+  (above), which 3.16.0's envelope and the request cost scope replaced.
+- 3.16.0 and 3.17.0 fill engine, model, usage, and cost on every result, so
+  `/v1/completions` now reports `usage` and `usd_cost`.
+- 3.18.0 raises `AiProviderRequestError` for media failures. The service's
+  own classification of unwrapped SDK errors (1.6.1) stays as the backstop.
+
+Not exposed yet: the complexity router and route preview (3.0.0, 3.15.0),
+per-call model pins (3.16.0), classification as a capability, cost
+attribution by `tenant` and `purpose` (3.14.0), and the per-environment
+overlay beyond passing `AI_MODELS_ENV` through. Each is a request-schema
+change of its own.
 
 **Why 2.32.1 was required.** On 2.32.0 a turn that failed over from Claude to
 OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
@@ -241,10 +277,13 @@ from a retired version is rejected with the same clear message.
 
 ## Middleware profile
 
-The library reads one process-wide middleware YAML from
-`AI_MIDDLEWARE_CONFIG_PATH`. The service ships `config/middleware.yaml` and
-defaults the variable to it when unset, so a stock deployment starts with
-observability and cost emission already on.
+The library reads one process-wide middleware list: the `middleware` section
+of models.json, or, when the deprecated `AI_MIDDLEWARE_CONFIG_PATH` is set, a
+YAML profile, which wins. The service ships the list inside
+`config/models.json` and defaults `AI_MODELS_CONFIG` to that file when unset,
+so a stock deployment starts with observability and cost emission already on.
+`verify_cost_capture` reads the library's resolved settings, so it checks
+whichever source the library is using.
 
 PII redaction is off in that profile. The library refuses to stream while
 redaction is enabled, because redaction cannot be guaranteed across chunk
@@ -360,7 +399,10 @@ log lines and cost records, so a newline would let a caller forge an entry.
 ## Configuration loading
 
 `config.py` loads `.env` into `os.environ` at startup, and real environment
-variables win over the file.
+variables win over the file. `cost.apply_default_models_config` then points
+`AI_MODELS_CONFIG` at `config/models.json` when the variable is unset; a
+deployment naming its own file, or setting the variable blank to run without
+one, is left alone.
 
 The library reads `.env` for **its** settings on its own — `EnvSettings` is a
 pydantic-settings model declared with `env_file=".env"` — but that populates
