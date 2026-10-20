@@ -143,3 +143,50 @@ def test_construction_failure_does_not_poison_the_pool() -> None:
             clients.get_completions_client("claude", "m")
 
     assert clients.pool_sizes()["completions"] == 0
+
+
+def test_a_configuration_value_error_names_no_variable_to_set() -> None:
+    # Library 3.26.0 raises AiProviderConfigurationValueError, a ValueError,
+    # for a value the provider rejected while the client was built. Its
+    # message names the models.json field and the deprecated key beside it;
+    # lifting that key as "the variable to set" would tell an operator to set
+    # a deprecated key that may already be set, to the wrong value.
+    from ai_api_unified import AiProviderConfigurationValueError
+
+    from ai_api_unified_http.errors import ProviderNotConfiguredError
+
+    rejected = AiProviderConfigurationValueError(
+        "providers.openai.base_url in models.json (or OPENAI_BASE_URL_OVERRIDE) "
+        "must use https:// (building the completions client for engine 'openai')"
+    )
+    with (
+        patch(
+            "ai_api_unified_http.clients.AIFactory.get_ai_completions_client",
+            side_effect=rejected,
+        ),
+        pytest.raises(ProviderNotConfiguredError) as caught,
+    ):
+        clients.get_completions_client("openai", None)
+
+    assert caught.value.missing_variable is None
+    assert "must use https://" in str(caught.value)
+    assert clients.pool_sizes()["completions"] == 0
+
+
+def test_a_missing_key_still_names_the_variable() -> None:
+    # The SDKs' own missing-key ValueError is not the library's new type,
+    # and its variable name is the fix.
+    from ai_api_unified_http.errors import ProviderNotConfiguredError
+
+    with (
+        patch(
+            "ai_api_unified_http.clients.AIFactory.get_ai_completions_client",
+            side_effect=ValueError(
+                "ANTHROPIC_API_KEY environment variable must be set."
+            ),
+        ),
+        pytest.raises(ProviderNotConfiguredError) as caught,
+    ):
+        clients.get_completions_client("claude", None)
+
+    assert caught.value.missing_variable == "ANTHROPIC_API_KEY"

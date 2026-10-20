@@ -13,6 +13,7 @@ from ai_api_unified import (
     AiFallbackReason,
     AiGuardrailBlockedError,
     AiProviderCapabilityUnsupportedError,
+    AiProviderConfigurationValueError,
     AiProviderRequestError,
     StructuredResponseTokenLimitError,
 )
@@ -97,6 +98,13 @@ _EXCEPTIONS: dict[str, Exception] = {
         score=0.93,
     ),
     "config": AiProviderConfigurationError("model retired"),
+    # Library 3.26.0: the same kind of error, raised while a client is built
+    # from the deployment's configuration. The deployment's fault, not the
+    # caller's, so it must not share its base's 400.
+    "config_value": AiProviderConfigurationValueError(
+        "providers.openai.base_url in models.json (or OPENAI_BASE_URL_OVERRIDE) "
+        "must use https:// (building the completions client for engine 'openai')"
+    ),
     "capability": AiProviderCapabilityUnsupportedError("engine cannot stream"),
     "dependency": AiProviderDependencyUnavailableError("boto3 not installed"),
     "token_limit": StructuredResponseTokenLimitError(
@@ -124,6 +132,7 @@ _EXCEPTIONS: dict[str, Exception] = {
         ("no_status", 502, "provider_unavailable"),
         ("timeout", 504, "provider_timeout"),
         ("config", 400, "invalid_request"),
+        ("config_value", 503, "provider_not_configured"),
         ("capability", 400, "invalid_request"),
         ("dependency", 503, "provider_dependency_unavailable"),
         ("token_limit", 422, "structured_response_token_limit"),
@@ -224,11 +233,16 @@ def test_error_body_shape_is_uniform(client: TestClient) -> None:
 def test_subclasses_are_registered_before_their_base() -> None:
     # AiProviderRequestError and the rest all inherit AiProviderError. If the
     # base were registered first, every failure would collapse to one 502.
+    # The same holds for any pair: AiProviderConfigurationValueError after
+    # AiProviderConfigurationError would answer the deployment's 503 as 400.
     registered = [exception_type for exception_type, _ in EXCEPTION_HANDLERS]
     assert registered[-1] is AiProviderError
-    for exception_type in registered[:-1]:
-        if issubclass(exception_type, AiProviderError):
-            assert registered.index(exception_type) < registered.index(AiProviderError)
+    for index, exception_type in enumerate(registered):
+        for later in registered[index + 1 :]:
+            assert not issubclass(later, exception_type), (
+                f"{later.__name__} is registered after its base "
+                f"{exception_type.__name__}, so its handler never runs"
+            )
 
 
 class TestProviderNotConfigured:

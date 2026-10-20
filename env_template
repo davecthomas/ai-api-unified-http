@@ -69,6 +69,19 @@ GOOGLE_GEMINI_API_KEY=
 # its settings are providers.openai_compatible in config/models.json.
 # OPENAI_COMPATIBLE_API_KEY=
 
+# --- Guardrail moderation backends (optional; guardrails ship disabled) ---
+# Read only when the guardrails entry in config/models.json is enabled. With
+# backend "auto", harmful_content uses OpenAI Moderation whenever
+# OPENAI_API_KEY is set, so a key below changes nothing until a check names
+# its backend. Bedrock needs no key here: it uses the AWS credential chain
+# and settings.backends.bedrock_guardrails.guardrail_id in the file.
+# MISTRAL_API_KEY=
+# AZURE_CONTENT_SAFETY_KEY=
+# The endpoint can instead go in settings.backends.azure_content_safety.
+# AZURE_CONTENT_SAFETY_ENDPOINT=https://<resource>.cognitiveservices.azure.com
+# A Cloud API key with the Natural Language API enabled.
+# GOOGLE_CLOUD_LANGUAGE_API_KEY=
+
 # --- Model selections (config/models.json) ---
 # The service points the library at config/models.json when this is unset.
 # Name another file (.json, .yaml, .yml) or inline JSON to use instead; blank
