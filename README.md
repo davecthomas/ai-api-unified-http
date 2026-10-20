@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.13.0
+# ai-api-unified-http 1.14.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -210,6 +210,38 @@ fallback, a classifier), `total_usd` sums them, `wasted_usd` is what was
 billed for answers nobody used, and `served_by` names the call whose answer
 came back. Both carry the caller headers as `caller_id` and `tag_*` fields.
 
+### Response cache
+
+The shipped profile turns on the library's response cache (library 3.23.0):
+an identical request returns the stored answer without reaching the router
+or the provider, for completions, structured output, conversations,
+embeddings, and classifications, an hour for generated text and a day for
+embeddings and classifications. Streaming is never cached. A caller that
+wants a fresh answer each time passes `"cache": "off"` in `provider_options`
+(conversations and structured output); the other values are `"on"` and
+`"bypass"`. The library README, "Response caching", has the key rules.
+
+The cache is in memory and per worker, like the rate limiter: each worker
+fills its own, so a request can miss on one worker after hitting on another.
+Hits are metered as `ai_api_request_cost` events with `cache_hit: true`,
+`total_usd: "0"`, and `usd_saved`, under the caller's headers, so the cost
+sink shows what caching saves per caller.
+
+Two operator endpoints show and clear it, behind `HTTP_ADMIN_KEYS` (same
+`label:key` form as `HTTP_API_KEYS`; a client key never opens them, and with
+no admin keys set they answer 403):
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_KEY" $URL/v1/admin/cache | jq
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN_KEY" "$URL/v1/admin/cache?operation=embeddings"
+```
+
+`GET` returns counters (hits, misses, `usd_saved`, per operation) and the
+live entries as metadata: key hash, operation, engine, model, stored time,
+seconds left, what one hit saves, size. Never a prompt or an answer. Both
+describe the worker that answered the request; with a shared store they
+describe everyone's.
+
 ### When a provider error is not wrapped
 
 The library translates provider failures into its own exception hierarchy on
@@ -376,6 +408,8 @@ standard runners on public repositories.
 | GET | `/v1/artifacts/{id}/content` | Stream the bytes, resumably |
 | GET | `/v1/voices` | Voices, formats, and what this engine supports |
 | POST | `/v1/speech` | Synthesize speech; returns a reference, not bytes |
+| GET | `/v1/admin/cache` | Response cache counters and entries (admin key) |
+| DELETE | `/v1/admin/cache` | Clear the response cache (admin key) |
 | GET | `/health`, `/healthz` | Liveness and versions |
 
 ### What a call cost

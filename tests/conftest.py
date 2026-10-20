@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 
 import pytest
-from ai_api_unified import AiCandidateCooldowns
+from ai_api_unified import AiCandidateCooldowns, reset_response_cache, set_cache_store
 from ai_api_unified.ai_models_config import clear_models_config_cache
 from fastapi.testclient import TestClient
 
@@ -69,6 +69,10 @@ def service_env(
     # with a trigger reason, so a failure one test staged would reroute the
     # next test's request to the fallback with the primary never asked.
     AiCandidateCooldowns.reset()
+    # Library 3.23.0: the response cache resolves its settings once per
+    # process and keeps entries in a process-wide store.
+    set_cache_store(None)
+    reset_response_cache()
 
     topic: str = f"test.{request.node.name}"
     monkeypatch.setenv(cost.COST_TOPIC_ENV, topic)

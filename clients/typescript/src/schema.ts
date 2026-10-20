@@ -38,6 +38,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Response cache: counters and live entries (this worker)
+         * @description Report the response cache as the answering worker sees it.
+         *
+         *     Args:
+         *         limit: Most entries to list, most recently used first.
+         *
+         *     Returns:
+         *         CacheResponse: Whether the cache is on, the store, hit and miss
+         *             counters with the cost they saved, and the live entries as
+         *             metadata.
+         */
+        get: operations["get_cache_v1_admin_cache_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Clear the response cache (this worker's store)
+         * @description Remove live entries from the response cache.
+         *
+         *     Args:
+         *         operation: Restrict the clear to one operation; all when omitted.
+         *
+         *     Returns:
+         *         CacheClearResponse: How many entries were removed. Counters are kept.
+         */
+        delete: operations["clear_cache_v1_admin_cache_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/artifacts/{artifact_id}/content": {
         parameters: {
             query?: never;
@@ -754,6 +792,96 @@ export interface components {
              * @description Prompts to run; each needs a custom_id unique within the batch.
              */
             requests: components["schemas"]["BatchRequestItem"][];
+        };
+        /** CacheClearResponse */
+        CacheClearResponse: {
+            /** Operation */
+            operation: string | null;
+            /** Removed */
+            removed: number;
+        };
+        /**
+         * CacheEntry
+         * @description One live cache entry, as metadata. Never the request or the answer.
+         */
+        CacheEntry: {
+            /** Bytes */
+            bytes: number;
+            /** Created At */
+            created_at: string | null;
+            /** Engine */
+            engine: string | null;
+            /** Expires In Seconds */
+            expires_in_seconds: number;
+            /**
+             * Key
+             * @description Store key: a hash, not the request.
+             */
+            key: string;
+            /** Model */
+            model: string | null;
+            /** Operation */
+            operation: string | null;
+            /**
+             * Usd
+             * @description What one hit saves, as a decimal string.
+             */
+            usd: string | null;
+        };
+        /**
+         * CacheOperationStats
+         * @description Hits, misses, and savings for one cache operation, this process.
+         */
+        CacheOperationStats: {
+            /** Hits */
+            hits: number;
+            /** Misses */
+            misses: number;
+            /**
+             * Usd Saved
+             * @description USD the hits saved, as a decimal string.
+             */
+            usd_saved: string;
+        };
+        /** CacheResponse */
+        CacheResponse: {
+            /** Entries */
+            entries: components["schemas"]["CacheEntry"][];
+            stats: components["schemas"]["CacheStats"];
+        };
+        /**
+         * CacheStats
+         * @description The response cache as the answering worker sees it.
+         *
+         *     Counters start at zero when the worker starts. `entries` is null when the
+         *     configured store cannot enumerate its contents.
+         */
+        CacheStats: {
+            /** By Operation */
+            by_operation?: {
+                [key: string]: components["schemas"]["CacheOperationStats"];
+            };
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Entries
+             * @description Live entries, or null if unknown.
+             */
+            entries: number | null;
+            /** Hits */
+            hits: number;
+            /** Misses */
+            misses: number;
+            /**
+             * Store
+             * @description Class name of the store in use.
+             */
+            store: string;
+            /**
+             * Usd Saved
+             * @description USD every hit saved, as a decimal string.
+             */
+            usd_saved: string;
         };
         /** CompletionRequest */
         CompletionRequest: {
@@ -1638,6 +1766,106 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    get_cache_v1_admin_cache_get: {
+        parameters: {
+            query?: {
+                /** @description Entries to list. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_cache_v1_admin_cache_delete: {
+        parameters: {
+            query?: {
+                /** @description Clear only this operation's entries: completions, structured_output, conversation, embeddings, or classification. */
+                operation?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheClearResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

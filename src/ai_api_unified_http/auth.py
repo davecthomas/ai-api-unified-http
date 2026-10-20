@@ -15,6 +15,11 @@ key carries a label used in logs to name which caller made a request.
 What this deliberately is not: a user identity system. Keys name calling
 applications, not people, and the service stores no per-key state beyond the
 label. Anything richer belongs behind a real identity provider.
+
+Operator endpoints under `/v1/admin` take a separate key set,
+`HTTP_ADMIN_KEYS`, with the same `label:key` form. A client key never opens
+them, and with no admin keys configured they answer 403: the surface is off,
+not open.
 """
 
 import hmac
@@ -40,11 +45,18 @@ from .schemas import ErrorResponse
 # for log attribution and never authenticates anything on its own.
 API_KEYS_ENV: Final[str] = "HTTP_API_KEYS"
 
+# Keys for the operator endpoints under ADMIN_PATH_PREFIX; same form as
+# HTTP_API_KEYS. Unset means those endpoints answer 403 to everyone.
+ADMIN_KEYS_ENV: Final[str] = "HTTP_ADMIN_KEYS"
+ADMIN_PATH_PREFIX: Final[str] = "/v1/admin/"
+
 # Opt-out for local development, where the service talks to a browser app on
 # localhost and requiring a key would mean pasting one into the test page.
 AUTH_DISABLED_ENV: Final[str] = "HTTP_AUTH_DISABLED"
 
 __all__ = [
+    "ADMIN_KEYS_ENV",
+    "ADMIN_PATH_PREFIX",
     "API_KEYS_ENV",
     "AUTH_DISABLED_ENV",
     "PUBLIC_PATHS",
@@ -70,13 +82,22 @@ def auth_disabled() -> bool:
 
 
 def load_api_keys() -> dict[str, str]:
-    """Parse configured keys into a key-to-label mapping.
+    """Parse configured client keys into a key-to-label mapping.
 
     Returns:
         dict[str, str]: Secret to label. An unlabeled entry gets the label
             "unnamed", so log attribution always has something to print.
     """
-    raw: str = os.environ.get(API_KEYS_ENV, "")
+    return _parse_keys(os.environ.get(API_KEYS_ENV, ""))
+
+
+def load_admin_keys() -> dict[str, str]:
+    """Parse configured admin keys; empty when the operator set none."""
+    return _parse_keys(os.environ.get(ADMIN_KEYS_ENV, ""))
+
+
+def _parse_keys(raw: str) -> dict[str, str]:
+    """Parse a comma-separated `label:key` list into secret-to-label."""
     keys: dict[str, str] = {}
     for entry in raw.split(","):
         cleaned: str = entry.strip()
@@ -167,10 +188,25 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return _refuse(request, "Missing bearer token.")
 
         presented: str = header[len(_BEARER_PREFIX) :].strip()
-        label: str | None = _match_key(presented, load_api_keys())
-        if label is None:
-            logger.warning("rejected request to %s: unknown key", request.url.path)
-            return _refuse(request, "Unknown API key.")
+        bool_admin: bool = request.url.path.startswith(ADMIN_PATH_PREFIX)
+        if bool_admin:
+            admin_keys: dict[str, str] = load_admin_keys()
+            if not admin_keys:
+                # Off, not open: nothing can be presented that would work.
+                return _forbidden(
+                    f"Admin endpoints are not enabled; set {ADMIN_KEYS_ENV}."
+                )
+            label: str | None = _match_key(presented, admin_keys)
+            if label is None:
+                logger.warning(
+                    "rejected request to %s: unknown admin key", request.url.path
+                )
+                return _refuse(request, "Unknown admin key.")
+        else:
+            label = _match_key(presented, load_api_keys())
+            if label is None:
+                logger.warning("rejected request to %s: unknown key", request.url.path)
+                return _refuse(request, "Unknown API key.")
 
         # Downstream handlers and logs identify the caller by label; the key
         # itself is never stored on the request or written anywhere.
@@ -201,6 +237,12 @@ def _refuse(request: Request, detail: str) -> JSONResponse:
     if not allowed:
         return too_many_requests(rate_limit(), window_seconds(), resets_in)
     return _unauthorized(detail)
+
+
+def _forbidden(detail: str) -> JSONResponse:
+    """Build the 403 body for an admin surface that is switched off."""
+    body = ErrorResponse(error="forbidden", detail=detail)
+    return JSONResponse(status_code=403, content=body.model_dump())
 
 
 def _unauthorized(detail: str) -> JSONResponse:

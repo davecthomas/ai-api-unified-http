@@ -139,7 +139,10 @@ def test_every_v1_route_is_protected(client: TestClient) -> None:
     for path in v1_paths:
         for method in spec["paths"][path]:
             call = getattr(client, method)
-            response = call(path) if method == "get" else call(path, json={})
+            # GET and DELETE carry no body; the rest get an empty one.
+            response = (
+                call(path) if method in ("get", "delete") else call(path, json={})
+            )
             assert response.status_code == 401, f"{method.upper()} {path} was not gated"
 
 

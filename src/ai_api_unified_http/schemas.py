@@ -10,7 +10,7 @@ ai-api-unified call signatures they map onto (see docs/technical-design.md).
 
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Ceilings on caller-supplied collections and text.
 #
@@ -847,6 +847,68 @@ class ErrorResponse(BaseModel):
             "Null when there is no reason."
         ),
     )
+
+
+class CacheOperationStats(BaseModel):
+    """Hits, misses, and savings for one cache operation, this process."""
+
+    hits: int
+    misses: int
+    usd_saved: str = Field(description="USD the hits saved, as a decimal string.")
+
+    @field_validator("usd_saved", mode="before")
+    @classmethod
+    def _money_as_text(cls, value: object) -> object:
+        return str(value) if value is not None else "0"
+
+
+class CacheStats(BaseModel):
+    """The response cache as the answering worker sees it.
+
+    Counters start at zero when the worker starts. `entries` is null when the
+    configured store cannot enumerate its contents.
+    """
+
+    enabled: bool
+    store: str = Field(description="Class name of the store in use.")
+    entries: int | None = Field(description="Live entries, or null if unknown.")
+    hits: int
+    misses: int
+    usd_saved: str = Field(description="USD every hit saved, as a decimal string.")
+    by_operation: dict[str, CacheOperationStats] = Field(default_factory=dict)
+
+    @field_validator("usd_saved", mode="before")
+    @classmethod
+    def _money_as_text(cls, value: object) -> object:
+        return str(value) if value is not None else "0"
+
+
+class CacheEntry(BaseModel):
+    """One live cache entry, as metadata. Never the request or the answer."""
+
+    key: str = Field(description="Store key: a hash, not the request.")
+    operation: str | None
+    engine: str | None
+    model: str | None
+    created_at: str | None
+    expires_in_seconds: float
+    usd: str | None = Field(description="What one hit saves, as a decimal string.")
+    bytes: int
+
+    @field_validator("usd", mode="before")
+    @classmethod
+    def _money_as_text(cls, value: object) -> object:
+        return str(value) if value is not None else None
+
+
+class CacheResponse(BaseModel):
+    stats: CacheStats
+    entries: list[CacheEntry]
+
+
+class CacheClearResponse(BaseModel):
+    removed: int
+    operation: str | None
 
 
 class HealthResponse(BaseModel):
