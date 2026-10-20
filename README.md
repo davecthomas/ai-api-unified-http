@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.15.0
+# ai-api-unified-http 1.15.1
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -62,25 +62,33 @@ level, the voice engine, the middleware profile) lives in
 [`config/models.json`](config/models.json), the library's `models.json`
 format, which the service points the library at when `AI_MODELS_CONFIG` is
 unset. The shipped file selects `claude` for completions, Gemini embeddings,
-and OpenAI voice, with cost emission on. Edit it to change a default, and
-check it with the library's validator:
+images, and video, and OpenAI voice, with cost emission on. Every capability
+needs its engine here: the library has no default provider for images or
+video, and a deployment sets no selection keys in its environment. Edit the
+file to change a default, and check it with the library's validator:
 
 ```bash
 poetry run python -m ai_api_unified.config_schema validate config/models.json
 ```
 
 `AI_MODELS_ENV` picks an entry under `environments` in the file and merges it
-over the rest, so one file can carry a `prod` variant. The pre-3.x selection
-keys (`COMPLETIONS_ENGINE`, `COMPLETIONS_FALLBACKS`, `AI_VOICE_ENGINE`, ...)
-still work and still win over the file, with one deprecation warning per key
-at startup. To move them out of an existing `.env`, run the library's
-migrator from this repo's root with the library checkout beside it. It reads
-and edits the `.env` in its working directory, so mind where you run it:
+over the rest (objects merge; lists and values replace). The shipped `dev`
+entry makes Gemini the completions engine with an OpenAI fallback, for local
+work; production sets no `AI_MODELS_ENV` and gets the file as written. For
+your own local choices, put `AI_MODELS_ENV=dev` in `.env` and edit that
+entry, rather than setting selection keys.
 
-```bash
-poetry run python ../ai_api_unified/scripts/migrate2json.py \
-  --out config/models.json --force --comment-env
-```
+The pre-3.x selection keys (`COMPLETIONS_ENGINE`, `COMPLETIONS_FALLBACKS`,
+`AI_VOICE_ENGINE`, ...) still work and still win over the file, which is what
+a startup warning like `COMPLETIONS_FALLBACKS is set in the environment or
+.env` means. To clear it, move each value into the `dev` entry (or the
+shipped defaults), comment the line out of `.env`, and set
+`AI_MODELS_ENV=dev`. Don't follow the warning's own advice to run the
+library's `migrate2json.py` here. It writes a `./models.json` this service
+does not read, because the service points `AI_MODELS_CONFIG` at
+`config/models.json`. Run with `--out config/models.json --force`, it
+overwrites the shipped file and drops its middleware list, and then the
+service refuses to start because no cost events would be emitted.
 
 `.env` is a local-development convenience. It is read at startup when present,
 and real environment variables always win, so a deployment supplying its own
