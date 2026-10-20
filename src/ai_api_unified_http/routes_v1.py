@@ -319,6 +319,31 @@ def _usage(usage: Any) -> TokenUsage:
     )
 
 
+def _cache_fields(result: Any) -> dict[str, Any]:
+    """The response fields a cache hit changes.
+
+    Library 3.23.0 answers an identical request from its response cache. The
+    envelope then carries the original call's usage, which must not be priced
+    again: the hit cost nothing, and `usd_saved` says what it would have.
+
+    Args:
+        result: The library's result envelope.
+
+    Returns:
+        dict[str, Any]: `cache_hit`, `usd_saved`, and, on a hit, a zero
+            `usd_cost` that overrides the priced one.
+    """
+    bool_hit: bool = bool(getattr(result, "cache_hit", False))
+    usd_saved: Any = getattr(result, "usd_saved", None)
+    fields: dict[str, Any] = {
+        "cache_hit": bool_hit,
+        "usd_saved": str(usd_saved) if usd_saved is not None else None,
+    }
+    if bool_hit:
+        fields["usd_cost"] = "0"
+    return fields
+
+
 def _usd_cost(client: Any, usage: Any) -> str | None:
     """Price measured usage, or return None when the model has no rates.
 
@@ -752,8 +777,11 @@ async def completions(
         engine=route.engine,
         model=route.model,
         served_by_fallback=route.served_by_fallback,
-        usage=_usage(result.usage),
-        usd_cost=_usd_cost(_pricing_client(client, route), result.usage),
+        **{
+            "usage": _usage(result.usage),
+            "usd_cost": _usd_cost(_pricing_client(client, route), result.usage),
+            **_cache_fields(result),
+        },
     )
 
 
@@ -802,8 +830,11 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
     return StructuredResponse(
         data=result.data,
         finish_reason=result.finish_reason.value,
-        usage=_usage(result.usage),
-        usd_cost=_usd_cost(_pricing_client(client, route), result.usage),
+        **{
+            "usage": _usage(result.usage),
+            "usd_cost": _usd_cost(_pricing_client(client, route), result.usage),
+            **_cache_fields(result),
+        },
         raw_text=result.raw_text,
         engine=route.engine,
         model=route.model,
@@ -872,8 +903,11 @@ async def conversation_turn(
             for call in turn.tool_calls
         ],
         finish_reason=turn.finish_reason.value,
-        usage=_usage(turn.usage),
-        usd_cost=_usd_cost(_pricing_client(client, route), turn.usage),
+        **{
+            "usage": _usage(turn.usage),
+            "usd_cost": _usd_cost(_pricing_client(client, route), turn.usage),
+            **_cache_fields(turn),
+        },
         conversation_token=_turn_token(client, turn),
         engine=route.engine,
         model=route.model,

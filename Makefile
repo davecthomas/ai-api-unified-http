@@ -9,21 +9,26 @@ PORT ?= 8080
 # disabling it, so local runs exercise the same path a deployment does. Real
 # deployments set HTTP_API_KEYS to a generated secret in their own environment.
 DEV_API_KEY ?= local-dev-key
-DEV_ENV = HTTP_API_KEYS="local:$(DEV_API_KEY)"
+# Local admin key, for the /v1/admin endpoints (response cache view and clear).
+DEV_ADMIN_KEY ?= local-admin-key
+DEV_ENV = HTTP_API_KEYS="local:$(DEV_API_KEY)" HTTP_ADMIN_KEYS="local:$(DEV_ADMIN_KEY)"
 
 # Sibling checkouts to copy a working .env from, in preference order.
 ENV_SOURCES = ../ai_api_unified/.env ../sample_ai_api_unified/.env
 
-.PHONY: help install lint test serve smoke env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs gcp-cicd gcp-artifacts client
+.PHONY: help install lint test test-cache serve smoke smoke-cache env gcp-project gcp-secrets gcp-deploy gcp-url gcp-logs gcp-cicd gcp-artifacts client
 
 help:
 	@echo "env          copy a working .env from a sibling ai_api_unified checkout"
 	@echo "install      poetry install with dev extras"
 	@echo "lint         ruff + black --check"
 	@echo "test         mocked test suite (no server needed)"
+	@echo "test-cache   the response cache and admin endpoint tests only"
 	@echo "serve        run the service on http://localhost:$(PORT) (reload on edit)"
 	@echo "             local API key: $(DEV_API_KEY)  (override with DEV_API_KEY=...)"
 	@echo "smoke        live checks against a running server on port $(PORT)"
+	@echo "smoke-cache  live response cache demo: miss, hit, admin view, clear"
+	@echo "             local admin key: $(DEV_ADMIN_KEY)  (override with DEV_ADMIN_KEY=...)"
 	@echo "client       regenerate the TypeScript client from the OpenAPI spec"
 	@echo ""
 	@echo "  Google Cloud Run (all take PROJECT=<project-id>)"
@@ -67,6 +72,9 @@ lint:
 test:
 	poetry run pytest -q
 
+test-cache:
+	poetry run pytest -q tests/test_admin_cache.py
+
 serve:
 	$(DEV_ENV) poetry run uvicorn ai_api_unified_http.app:create_app --factory --reload --port $(PORT)
 
@@ -84,6 +92,23 @@ smoke:
 	@echo "bad body:     HTTP $$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$(PORT)/v1/completions -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{}') (expect 422)"
 	@echo "tokens:       HTTP $$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$(PORT)/v1/tokens/count -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{"engine":"claude","model":"claude-haiku-4-5","prompt":"hi"}') (expect 200)"
 	@echo "smoke OK"
+
+# Live response cache demo against a running server: the same prompt twice
+# (a miss that reaches the provider, then a hit), the admin view, a client
+# key refused on the admin path, then a clear. One provider call is billed.
+smoke-cache:
+	@curl -sf http://localhost:$(PORT)/healthz > /dev/null \
+		|| (echo "server not reachable on port $(PORT) — run 'make serve' first" && exit 1)
+	@echo "== 1. first call (miss; reaches the provider)"
+	@curl -s -X POST http://localhost:$(PORT)/v1/completions -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{"engine":"claude","model":"claude-haiku-4-5","prompt":"Say OK","max_response_tokens":16}' | python3 -c 'import json,sys; b=json.load(sys.stdin); print("   text=%r usd_cost=%s" % (b.get("text"), b.get("usd_cost")))'
+	@echo "== 2. same call (hit; usd_cost 0, no provider call)"
+	@curl -s -X POST http://localhost:$(PORT)/v1/completions -H "authorization: Bearer $(DEV_API_KEY)" -H 'content-type: application/json' -d '{"engine":"claude","model":"claude-haiku-4-5","prompt":"Say OK","max_response_tokens":16}' | python3 -c 'import json,sys; b=json.load(sys.stdin); print("   text=%r usd_cost=%s" % (b.get("text"), b.get("usd_cost")))'
+	@echo "== 3. admin view (expect hits=1 misses=1 entries=1)"
+	@curl -s http://localhost:$(PORT)/v1/admin/cache -H "authorization: Bearer $(DEV_ADMIN_KEY)" | python3 -c 'import json,sys; b=json.load(sys.stdin); s=b["stats"]; print("   enabled=%s store=%s entries=%s hits=%s misses=%s usd_saved=%s" % (s["enabled"], s["store"], s["entries"], s["hits"], s["misses"], s["usd_saved"])); [print("   entry: op=%s model=%s expires_in=%ss usd=%s bytes=%s" % (e["operation"], e["model"], int(e["expires_in_seconds"]), e["usd"], e["bytes"])) for e in b["entries"]]'
+	@echo "== 4. client key on the admin path: HTTP $$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$(PORT)/v1/admin/cache -H "authorization: Bearer $(DEV_API_KEY)") (expect 401)"
+	@echo "== 5. clear"
+	@curl -s -X DELETE http://localhost:$(PORT)/v1/admin/cache -H "authorization: Bearer $(DEV_ADMIN_KEY)"; echo
+	@echo "smoke-cache OK"
 
 
 # Regenerate the TypeScript client. The spec comes from the app object rather

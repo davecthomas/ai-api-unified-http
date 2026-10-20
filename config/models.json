@@ -40,6 +40,20 @@
       }
     },
     {
+      "name": "response_cache",
+      "enabled": true,
+      "settings": {
+        "max_entries": 10000,
+        "operations": {
+          "completions": {"ttl_seconds": 3600},
+          "structured_output": {"ttl_seconds": 3600},
+          "conversation": {"ttl_seconds": 3600},
+          "embeddings": {"ttl_seconds": 86400},
+          "classification": {"ttl_seconds": 86400}
+        }
+      }
+    },
+    {
       "name": "pii_redaction",
       "enabled": false,
       "settings": {

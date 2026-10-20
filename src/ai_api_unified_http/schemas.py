@@ -10,7 +10,7 @@ ai-api-unified call signatures they map onto (see docs/technical-design.md).
 
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Ceilings on caller-supplied collections and text.
 #
@@ -235,6 +235,14 @@ class StructuredRequest(EngineSelection):
     )
 
 
+CACHE_HIT_DESCRIPTION: Final[str] = (
+    "True when the response cache answered and no provider was called; "
+    '`usd_cost` is then "0" and `usd_saved` is what the original call cost.'
+)
+USD_SAVED_DESCRIPTION: Final[str] = (
+    "On a cache hit, the original call's cost in USD as a decimal string; "
+    "null otherwise, or when that call was unpriced."
+)
 USD_COST_DESCRIPTION: Final[str] = (
     "Cost of this call in USD, priced from the usage above, or null when the "
     "model carries no token rates in the registry. A string for the same "
@@ -293,6 +301,8 @@ class CompletionResponse(BaseModel):
         description="Token counts of the call that answered.",
     )
     usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
+    cache_hit: bool = Field(default=False, description=CACHE_HIT_DESCRIPTION)
+    usd_saved: str | None = Field(default=None, description=USD_SAVED_DESCRIPTION)
 
 
 class StructuredResponse(BaseModel):
@@ -312,6 +322,8 @@ class StructuredResponse(BaseModel):
     )
     usage: TokenUsage
     usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
+    cache_hit: bool = Field(default=False, description=CACHE_HIT_DESCRIPTION)
+    usd_saved: str | None = Field(default=None, description=USD_SAVED_DESCRIPTION)
     raw_text: str = Field(
         description="Model output before parsing, for diagnosing a null data field."
     )
@@ -351,6 +363,8 @@ class ConversationTurnResponse(BaseModel):
     )
     usage: TokenUsage
     usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
+    cache_hit: bool = Field(default=False, description=CACHE_HIT_DESCRIPTION)
+    usd_saved: str | None = Field(default=None, description=USD_SAVED_DESCRIPTION)
     conversation_token: str | None = Field(
         default=None,
         description=(
@@ -847,6 +861,68 @@ class ErrorResponse(BaseModel):
             "Null when there is no reason."
         ),
     )
+
+
+class CacheOperationStats(BaseModel):
+    """Hits, misses, and savings for one cache operation, this process."""
+
+    hits: int
+    misses: int
+    usd_saved: str = Field(description="USD the hits saved, as a decimal string.")
+
+    @field_validator("usd_saved", mode="before")
+    @classmethod
+    def _money_as_text(cls, value: object) -> object:
+        return str(value) if value is not None else "0"
+
+
+class CacheStats(BaseModel):
+    """The response cache as the answering worker sees it.
+
+    Counters start at zero when the worker starts. `entries` is null when the
+    configured store cannot enumerate its contents.
+    """
+
+    enabled: bool
+    store: str = Field(description="Class name of the store in use.")
+    entries: int | None = Field(description="Live entries, or null if unknown.")
+    hits: int
+    misses: int
+    usd_saved: str = Field(description="USD every hit saved, as a decimal string.")
+    by_operation: dict[str, CacheOperationStats] = Field(default_factory=dict)
+
+    @field_validator("usd_saved", mode="before")
+    @classmethod
+    def _money_as_text(cls, value: object) -> object:
+        return str(value) if value is not None else "0"
+
+
+class CacheEntry(BaseModel):
+    """One live cache entry, as metadata. Never the request or the answer."""
+
+    key: str = Field(description="Store key: a hash, not the request.")
+    operation: str | None
+    engine: str | None
+    model: str | None
+    created_at: str | None
+    expires_in_seconds: float
+    usd: str | None = Field(description="What one hit saves, as a decimal string.")
+    bytes: int
+
+    @field_validator("usd", mode="before")
+    @classmethod
+    def _money_as_text(cls, value: object) -> object:
+        return str(value) if value is not None else None
+
+
+class CacheResponse(BaseModel):
+    stats: CacheStats
+    entries: list[CacheEntry]
+
+
+class CacheClearResponse(BaseModel):
+    removed: int
+    operation: str | None
 
 
 class HealthResponse(BaseModel):

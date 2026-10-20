@@ -6,6 +6,10 @@
       "description": "Comma-separated API keys callers present as 'Authorization: Bearer <key>'. Each entry is label:key. Generate one with: openssl rand -hex 32",
       "required": true
     },
+    "HTTP_ADMIN_KEYS": {
+      "description": "Optional. Keys for the operator endpoints under /v1/admin (response cache view and clear), as label:key. Unset leaves them answering 403.",
+      "required": false
+    },
     "ANTHROPIC_API_KEY": {
       "description": "Anthropic key, for the 'claude' engine. Leave blank if unused.",
       "required": false

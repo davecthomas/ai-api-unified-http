@@ -44,6 +44,10 @@ LOG_LEVEL=INFO
 # Run without authentication on purpose (local development only). The service
 # starts with a warning; every caller can spend provider credits.
 # HTTP_AUTH_DISABLED=1
+# Admin keys open the operator endpoints under /v1/admin (the response cache
+# view and clear). Same form as HTTP_API_KEYS; a client key never opens them.
+# Unset leaves those endpoints answering 403.
+# HTTP_ADMIN_KEYS=ops:replace-with-a-generated-secret
 
 # --- Cost-event capture (required; the service refuses to start without it) ---
 # Every provider call emits a cost event, and every request emits one more

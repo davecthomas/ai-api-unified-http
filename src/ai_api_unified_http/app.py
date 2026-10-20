@@ -31,6 +31,7 @@ from .fallback import verify_fallback_config
 from .logging_setup import configure_logging
 from .rate_limit import RateLimitMiddleware, rate_limit, window_seconds
 from .request_limits import RequestSizeLimitMiddleware, max_request_bytes
+from .routes_admin import router as admin_router
 from .routes_v1 import router as v1_router
 from .schemas import HealthResponse
 
@@ -151,6 +152,7 @@ def create_app() -> FastAPI:
         allow_headers=["content-type", "authorization"],
     )
     app.include_router(v1_router)
+    app.include_router(admin_router)
 
     def _health() -> HealthResponse:
         return HealthResponse(
