@@ -25,9 +25,14 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any, Final
 
-from ai_api_unified import AIRequestCostReport, request_cost_scope
+from ai_api_unified import (
+    AiGuardrailBlockedError,
+    AIRequestCostReport,
+    request_cost_scope,
+)
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
+from .errors import guardrail_block_detail
 from .fallback import ServedRoute
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
@@ -104,6 +109,28 @@ async def sse_from_sync_iterator(
                 chunk_count += 1
                 yield format_sse(EVENT_CHUNK, {"text": chunk})
         report = scope.report
+    except AiGuardrailBlockedError as blocked:
+        # Behind a fallback chain the input check runs at the first chunk,
+        # after the 200 went out, so the block travels in-band. It carries
+        # the same fields as the 422 a plain engine's block returns, and the
+        # detail is built from them, never from text the check read.
+        logger.info(
+            "guardrail blocked a stream: check=%s direction=%s",
+            blocked.check,
+            blocked.direction,
+        )
+        yield format_sse(
+            EVENT_ERROR,
+            {
+                "error": "guardrail_blocked",
+                "detail": guardrail_block_detail(blocked),
+                "guardrail_check": blocked.check,
+                "guardrail_direction": blocked.direction,
+                "engine": engine,
+                "chunks_delivered": chunk_count,
+            },
+        )
+        return
     except Exception as error:  # noqa: BLE001 - the status line is already sent
         # A buffered call would map this to a 502. Here the 200 is committed,
         # so the failure has to travel in-band as the stream's last event.
