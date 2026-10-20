@@ -221,6 +221,16 @@ check runs at the first `next()`, inside the SSE bridge after the 200 is
 committed; `streaming.py` reports it as an `error` event carrying
 `guardrail_blocked` and the same fields.
 
+**Library 3.25.0 and 3.26.0.** One pin step, service 1.16.0. 3.25.0 adds
+four moderation backends for the guardrail checks (Mistral, Azure Content
+Safety, Bedrock Guardrails, Google Cloud Natural Language), chosen by
+`backend` or by `auto` in a fixed order; the service passes them through,
+ships only `settings.backends.timeout_seconds`, and leaves the provider
+blocks out, since a `guardrail_id` or an endpoint changes what `auto` picks.
+3.26.0 stops reporting a construction-time configuration error as an
+unsupported engine and raises `AiProviderConfigurationValueError` with the
+provider's message: see "Error mapping".
+
 **Why 2.32.1 was required.** On 2.32.0 a turn that failed over from Claude to
 OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
 `{"role": "assistant", "content": "...", "annotations": []}`, the wrapper read
@@ -445,6 +455,22 @@ a key they do not hold.
 `AiProviderRequestError` carries the provider's own `status_code` and
 `provider_engine`, so classification reads them directly instead of matching
 message text.
+
+A client that cannot be built is the deployment's problem, so it is a 503
+`provider_not_configured`. The pool catches `ValueError` around construction
+and lifts the variable a provider's missing-key message names. Library
+3.26.0's `AiProviderConfigurationValueError` (a retired default model, a base
+URL that would send keys over plaintext) is a `ValueError` too, and takes
+the same 503, except that no variable is lifted: its message names the
+models.json field and the fix, and its first upper-case word is the
+deprecated environment key, which "set it" would wrongly advise. It also
+subclasses `AiProviderConfigurationError`, which answers 400 as the
+caller's fault, so it has its own handler, registered before its base, for
+the case where it escapes the pool. A fallback candidate that cannot be
+built never reaches either: the chain logs `candidate_unbuildable` and skips
+it. A request naming a retired model is also answered 503 on this path,
+although the caller could fix it, because the error does not say whether
+the model came from the request or the deployment.
 
 | Library exception | Condition | HTTP status | `error` code |
 |---|---|---|---|

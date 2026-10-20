@@ -2,14 +2,14 @@
 
 [[package]]
 name = "ai-api-unified"
-version = "3.24.0"
+version = "3.26.0"
 description = "Unified access layer for AI completions (LLM), embedding (semantic), image, video, and voice services"
 optional = false
 python-versions = "<3.14,>=3.11"
 groups = ["main"]
 files = [
-    {file = "ai_api_unified-3.24.0-py3-none-any.whl", hash = "sha256:6911f08586c3de94496f4eb1ff451003fe94bd6dfea53d2c6d8ad8dcc69c03c5"},
-    {file = "ai_api_unified-3.24.0.tar.gz", hash = "sha256:4f9d8eda1162a516eb0cc77358c1baba0021a024afb7ec495ecd5ae8d48252b6"},
+    {file = "ai_api_unified-3.26.0-py3-none-any.whl", hash = "sha256:e696aeb2260461ca87f546a463aba10c83076c205b73ff81f056d6a0f851f880"},
+    {file = "ai_api_unified-3.26.0.tar.gz", hash = "sha256:8b2b2e1eb8341f661025a8c4546184d450db3ab5ed310bf8f6c56c09996f0b05"},
 ]
 
 [package.dependencies]
@@ -3493,4 +3493,4 @@ dev = ["black", "httpx", "pytest", "ruff"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "cc7d02c15ad22eec5d285c55b20da39f13c2544f2d71c391b7911647c9e2cf51"
+content-hash = "643069204b63c658d5da7ced5ca899c130cfe53e732c3051088e00eb865bb9d1"

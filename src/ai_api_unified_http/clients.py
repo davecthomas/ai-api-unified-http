@@ -28,6 +28,7 @@ from ai_api_unified import (
     AIBaseEmbeddings,
     AIFactory,
     AIFallbackCandidate,
+    AiProviderConfigurationValueError,
     AIVoiceFactory,
 )
 from ai_api_unified.completions.ai_fallback_completions import (
@@ -253,6 +254,16 @@ def _build(factory: Any, engine: str, **kwargs: Any) -> Any:
     """
     try:
         return factory(**kwargs)
+    except AiProviderConfigurationValueError as error:
+        # Library 3.26.0: a configuration value the provider rejected while
+        # the client was built (a retired model, a base URL that would send
+        # keys over plaintext). The message already names the field and the
+        # fix, so no variable is lifted from it: the first upper-case word
+        # there is often the deprecated environment key, and "set it" would
+        # be the wrong advice for a value that is set and wrong.
+        raise ProviderNotConfiguredError(
+            str(error), engine=engine, missing_variable=None
+        ) from error
     except (ValueError, KeyError) as error:
         raise ProviderNotConfiguredError(
             str(error), engine=engine, missing_variable=missing_variable_from(error)

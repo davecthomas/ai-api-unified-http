@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.15.1
+# ai-api-unified-http 1.16.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -262,10 +262,11 @@ and settings to start from, and the library README, "Guardrails", documents
 every field.
 
 - **`prompt_injection`** asks the deployment's classifier whether the text
-  tries to override, ignore, or extract the instructions. Input only, as
-  shipped.
+  tries to override, ignore, or extract the instructions, unless a provider
+  backend below is configured for it. Input only, as shipped.
 - **`harmful_content`** uses OpenAI's Moderation endpoint (free) when
-  `OPENAI_API_KEY` is set, else the classifier.
+  `OPENAI_API_KEY` is set, else the next configured backend below, else the
+  classifier.
 - **`custom`** rules: `terms` and `patterns` that cost nothing, or a yes/no
   `question` for the classifier.
 
@@ -289,6 +290,34 @@ The classifier calls a check makes are metered as classifier-role line items
 on the request's cost event, so the sink shows what checking costs per
 caller. A response-cache hit skips the output checks: the stored answer was
 checked when it was stored.
+
+**Moderation backends (library 3.25.0).** Besides OpenAI Moderation and the
+classifier, a check can run on another provider's moderation service. Each
+counts as configured when it has what the table lists; keys go in the
+environment, everything else under `settings.backends` in the guardrails
+entry.
+
+| Backend | Serves | Configured when |
+|---|---|---|
+| `openai_moderation` | `harmful_content` | `OPENAI_API_KEY` is set |
+| `mistral_moderation` | `harmful_content` | `MISTRAL_API_KEY` is set |
+| `azure_content_safety` | both (Prompt Shields for `prompt_injection`) | `AZURE_CONTENT_SAFETY_KEY`, and an endpoint in `settings.backends.azure_content_safety.endpoint` or `AZURE_CONTENT_SAFETY_ENDPOINT` |
+| `bedrock_guardrails` | both (`PROMPT_ATTACK` for `prompt_injection`) | `settings.backends.bedrock_guardrails.guardrail_id` names a guardrail in the account; AWS credentials from the usual chain |
+| `google_moderation` | `harmful_content` | `GOOGLE_CLOUD_LANGUAGE_API_KEY` (a Cloud API key with the Natural Language API enabled) |
+| `classifier` | both | always; the fallback for `auto` |
+
+With `backend: "auto"`, `harmful_content` takes the first configured one in
+the order OpenAI, Mistral, Azure, Bedrock, Google, and `prompt_injection`
+the first of Azure, Bedrock, then the classifier. This service holds
+`OPENAI_API_KEY`, so `auto` keeps harmful content on OpenAI Moderation
+whatever else is configured; to use another provider, name it as the
+check's `backend`. `settings.backends.timeout_seconds` (10 as shipped)
+bounds each backend call.
+
+None of these keys is in the deploy. `make gcp-deploy` mounts a fixed list
+of secrets, and naming one that does not exist in Secret Manager fails the
+deploy, so a deployment that wants one adds the secret and its
+`--set-secrets` entry deliberately.
 
 ### When a provider error is not wrapped
 

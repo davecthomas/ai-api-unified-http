@@ -85,7 +85,10 @@
           "backend": "auto",
           "threshold": 0.8
         },
-        "custom": []
+        "custom": [],
+        "backends": {
+          "timeout_seconds": 10
+        }
       }
     },
     {

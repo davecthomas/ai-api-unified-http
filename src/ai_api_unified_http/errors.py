@@ -27,6 +27,7 @@ from ai_api_unified import (
     AiFallbackReason,
     AiGuardrailBlockedError,
     AiProviderCapabilityUnsupportedError,
+    AiProviderConfigurationValueError,
     AiProviderRequestError,
     StructuredResponseTokenLimitError,
 )
@@ -329,6 +330,28 @@ async def handle_provider_not_configured(
     )
 
 
+async def handle_provider_configuration_value(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Map a client-construction configuration error onto 503.
+
+    Library 3.26.0 raises `AiProviderConfigurationValueError` when a
+    provider rejects the deployment's configuration while a client is built:
+    a retired model, a base URL that would send keys over plaintext. The
+    pool translates it to `ProviderNotConfiguredError` on its own build
+    path; this handler covers it escaping any other way. It must not reach
+    the `AiProviderConfigurationError` handler, which answers 400 and would
+    blame the caller for the deployment's setting.
+    """
+    assert isinstance(exc, AiProviderConfigurationValueError)
+    logger.error("provider configuration rejected: %s", exc)
+    return _error_response(
+        status_code=503,
+        error_code="provider_not_configured",
+        detail=str(exc),
+    )
+
+
 async def handle_provider_error(request: Request, exc: Exception) -> JSONResponse:
     """Map any remaining library failure onto 502.
 
@@ -349,6 +372,9 @@ EXCEPTION_HANDLERS: Final[list[tuple[type[Exception], object]]] = [
     (ProviderNotConfiguredError, handle_provider_not_configured),
     (AiGuardrailBlockedError, handle_guardrail_blocked),
     (AiProviderRequestError, handle_provider_request_error),
+    # Before its base: the subclass is the deployment's problem (503), the
+    # base the caller's (400).
+    (AiProviderConfigurationValueError, handle_provider_configuration_value),
     (AiProviderConfigurationError, handle_bad_request_error),
     (AiProviderCapabilityUnsupportedError, handle_bad_request_error),
     (AiProviderDependencyUnavailableError, handle_dependency_unavailable),
