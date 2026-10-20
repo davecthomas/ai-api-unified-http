@@ -77,8 +77,12 @@ GOOGLE_GEMINI_API_KEY=
 #   poetry run python -m ai_api_unified.config_schema validate config/models.json
 # AI_MODELS_CONFIG=config/models.json
 # Pick an entry under "environments" in the file and merge it over the rest
-# (objects merge, lists and values replace). Unset uses the file as written.
-# AI_MODELS_ENV=prod
+# (objects merge, lists and values replace). Unset uses the file as written,
+# which is what production does. The shipped "dev" entry is for local work:
+# Gemini completions with an OpenAI fallback. Put your own local choices in
+# that entry rather than in selection keys here. Naming an entry the file
+# does not define is a startup error.
+# AI_MODELS_ENV=dev
 #
 # The pre-3.x selection keys still work and win over the file, with one
 # deprecation warning per key at startup: COMPLETIONS_ENGINE,
@@ -86,8 +90,10 @@ GOOGLE_GEMINI_API_KEY=
 # COMPLETIONS_RETRY_POLICY, EMBEDDING_ENGINE, EMBEDDING_MODEL_NAME,
 # AI_VOICE_ENGINE, GOOGLE_AUTH_METHOD, OPENAI_COMPATIBLE_BASE_URL,
 # OPENAI_COMPATIBLE_STRUCTURED_OUTPUT, OPENAI_COMPATIBLE_CONTEXT_WINDOW,
-# AI_STRICT_DEPRECATIONS, AI_MIDDLEWARE_CONFIG_PATH. Move them into the file
-# with the library's migrator (see the README). `make gcp-deploy FALLBACKS=...`
+# AI_STRICT_DEPRECATIONS, AI_MIDDLEWARE_CONFIG_PATH, IMAGE_ENGINE,
+# IMAGE_MODEL_NAME, VIDEO_ENGINE, VIDEO_MODEL_NAME. Move each into the file's
+# "dev" entry and comment it out here; the README says why the library's
+# migrator is the wrong tool in this repo. `make gcp-deploy FALLBACKS=...`
 # sets COMPLETIONS_FALLBACKS this way on purpose, so a deployment can name a
 # chain without editing the file.
 
