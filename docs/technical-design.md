@@ -200,6 +200,27 @@ attribution by `tenant` and `purpose` (3.14.0), and the per-environment
 overlay beyond passing `AI_MODELS_ENV` through. Each is a request-schema
 change of its own.
 
+**Library 3.23.0 and 3.24.0.** 3.23.0 (service 1.14.0) adds the response
+cache, on in the shipped profile, with `cache_hit` and `usd_saved` on the
+generation responses and two admin endpoints. 3.24.0 (service 1.15.0) adds
+guardrails, off in the shipped profile. A blocking check raises
+`AiGuardrailBlockedError`, which is an `AiProviderError` but not an
+`AiProviderRequestError`: it carries no `fallback_reason`, no chain moves
+it, and without its own handler it would fall through to the base's 502.
+`errors.py` maps it to 422 `guardrail_blocked` with `guardrail_check` and
+`guardrail_direction` on the body, with the detail built from the
+exception's fields rather than its message so the checked text has no path
+into a response or a log line. A flagging check puts its name in
+`guardrail_flags` on every result envelope, which the three generation
+responses copy. A stream runs the input checks only, and where the block
+surfaces depends on the pooled client. The library wraps an engine's
+`send_prompt_streaming` so the check runs when the route opens the stream,
+before `StreamingResponse` exists, and the block is the ordinary 422. A
+fallback chain opens each candidate's stream inside its own generator, so the
+check runs at the first `next()`, inside the SSE bridge after the 200 is
+committed; `streaming.py` reports it as an `error` event carrying
+`guardrail_blocked` and the same fields.
+
 **Why 2.32.1 was required.** On 2.32.0 a turn that failed over from Claude to
 OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
 `{"role": "assistant", "content": "...", "annotations": []}`, the wrapper read

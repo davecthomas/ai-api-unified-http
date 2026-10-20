@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.14.0
+# ai-api-unified-http 1.15.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -243,6 +243,44 @@ live entries as metadata: key hash, operation, engine, model, stored time,
 seconds left, what one hit saves, size. Never a prompt or an answer. Both
 describe the worker that answered the request; with a shared store they
 describe everyone's.
+
+### Guardrails
+
+Library 3.24.0 can check every request and every answer on
+`/v1/completions`, `/v1/structured`, and `/v1/conversations/turn` before
+the caller sees either. Off unless an operator turns it on: the shipped
+`config/models.json` carries a `guardrails` entry with `"enabled": false`
+and settings to start from, and the library README, "Guardrails", documents
+every field.
+
+- **`prompt_injection`** asks the deployment's classifier whether the text
+  tries to override, ignore, or extract the instructions. Input only, as
+  shipped.
+- **`harmful_content`** uses OpenAI's Moderation endpoint (free) when
+  `OPENAI_API_KEY` is set, else the classifier.
+- **`custom`** rules: `terms` and `patterns` that cost nothing, or a yes/no
+  `question` for the classifier.
+
+A check that fires either **blocks** or **flags**, per `on_fail` or its own
+`action`. A block answers **422 `guardrail_blocked`** with `guardrail_check`
+and `guardrail_direction` (`input`: the caller's text; `output`: the model's
+answer) in the error body. No fallback moves a blocked call to another
+model, and retrying it unchanged blocks again. A flag lets the call through
+and lists the check in `guardrail_flags` on the response. Neither the error
+body, the response, nor any log line carries the text a check read.
+
+Streams get the input checks only. On a plain engine the check runs before
+the stream opens, so a block is the same 422. Behind a fallback chain it runs
+at the first chunk, after the 200 status line is sent, so the block arrives
+as the stream's `error` event with `error: "guardrail_blocked"` and the same
+two fields. `on_error` decides what
+a check that cannot run does (a classifier outage): `block` refuses the
+call, `allow` lets it through with a warning.
+
+The classifier calls a check makes are metered as classifier-role line items
+on the request's cost event, so the sink shows what checking costs per
+caller. A response-cache hit skips the output checks: the stored answer was
+checked when it was stored.
 
 ### When a provider error is not wrapped
 

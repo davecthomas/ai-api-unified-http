@@ -950,6 +950,11 @@ export interface components {
              */
             engine: string;
             /**
+             * Guardrail Flags
+             * @description Names of the deployment's guardrail checks that fired with action 'flag' on this call, on the request or the answer. The call went through; a check set to block answers 422 guardrail_blocked instead. Empty when no check fired or guardrails are off.
+             */
+            guardrail_flags?: string[];
+            /**
              * Model
              * @description Model that served the request, or null for the engine default.
              */
@@ -1057,6 +1062,11 @@ export interface components {
              * @description One of: complete, length, tool_use, refusal.
              */
             finish_reason: string;
+            /**
+             * Guardrail Flags
+             * @description Names of the deployment's guardrail checks that fired with action 'flag' on this call, on the request or the answer. The call went through; a check set to block answers 422 guardrail_blocked instead. Empty when no check fired or guardrails are off.
+             */
+            guardrail_flags?: string[];
             /** Model */
             model?: string | null;
             /**
@@ -1163,6 +1173,16 @@ export interface components {
              * @description Why the provider failure might be served by another model: unavailable, rate_limited, quota_exhausted, auth_rejected, model_unavailable, or timeout. Null when another model would fail the same way (a validation error, a refusal). On a deployment with a fallback chain, the failure is from the last model tried.
              */
             fallback_reason?: string | null;
+            /**
+             * Guardrail Check
+             * @description On guardrail_blocked, the check that fired: prompt_injection, harmful_content, or a custom check's name. Never the text it read.
+             */
+            guardrail_check?: string | null;
+            /**
+             * Guardrail Direction
+             * @description On guardrail_blocked, 'input' when the request was refused and 'output' when the model's answer was.
+             */
+            guardrail_direction?: string | null;
             /**
              * Provider Status
              * @description HTTP status reported by the provider, when one was reported.
@@ -1502,6 +1522,11 @@ export interface components {
              * @description One of: complete, length, tool_use, refusal.
              */
             finish_reason: string;
+            /**
+             * Guardrail Flags
+             * @description Names of the deployment's guardrail checks that fired with action 'flag' on this call, on the request or the answer. The call went through; a check set to block answers 422 guardrail_blocked instead. Empty when no check fired or guardrails are off.
+             */
+            guardrail_flags?: string[];
             /** Model */
             model?: string | null;
             /**

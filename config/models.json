@@ -54,6 +54,17 @@
       }
     },
     {
+      "name": "guardrails",
+      "enabled": false,
+      "settings": {
+        "on_fail": "block",
+        "on_error": "block",
+        "prompt_injection": {"threshold": 0.8, "direction": "input_only"},
+        "harmful_content": {"backend": "auto", "threshold": 0.8},
+        "custom": []
+      }
+    },
+    {
       "name": "pii_redaction",
       "enabled": false,
       "settings": {

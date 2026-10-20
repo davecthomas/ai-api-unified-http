@@ -243,6 +243,12 @@ USD_SAVED_DESCRIPTION: Final[str] = (
     "On a cache hit, the original call's cost in USD as a decimal string; "
     "null otherwise, or when that call was unpriced."
 )
+GUARDRAIL_FLAGS_DESCRIPTION: Final[str] = (
+    "Names of the deployment's guardrail checks that fired with action "
+    "'flag' on this call, on the request or the answer. The call went "
+    "through; a check set to block answers 422 guardrail_blocked instead. "
+    "Empty when no check fired or guardrails are off."
+)
 USD_COST_DESCRIPTION: Final[str] = (
     "Cost of this call in USD, priced from the usage above, or null when the "
     "model carries no token rates in the registry. A string for the same "
@@ -303,6 +309,9 @@ class CompletionResponse(BaseModel):
     usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
     cache_hit: bool = Field(default=False, description=CACHE_HIT_DESCRIPTION)
     usd_saved: str | None = Field(default=None, description=USD_SAVED_DESCRIPTION)
+    guardrail_flags: list[str] = Field(
+        default_factory=list, description=GUARDRAIL_FLAGS_DESCRIPTION
+    )
 
 
 class StructuredResponse(BaseModel):
@@ -324,6 +333,9 @@ class StructuredResponse(BaseModel):
     usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
     cache_hit: bool = Field(default=False, description=CACHE_HIT_DESCRIPTION)
     usd_saved: str | None = Field(default=None, description=USD_SAVED_DESCRIPTION)
+    guardrail_flags: list[str] = Field(
+        default_factory=list, description=GUARDRAIL_FLAGS_DESCRIPTION
+    )
     raw_text: str = Field(
         description="Model output before parsing, for diagnosing a null data field."
     )
@@ -365,6 +377,9 @@ class ConversationTurnResponse(BaseModel):
     usd_cost: str | None = Field(default=None, description=USD_COST_DESCRIPTION)
     cache_hit: bool = Field(default=False, description=CACHE_HIT_DESCRIPTION)
     usd_saved: str | None = Field(default=None, description=USD_SAVED_DESCRIPTION)
+    guardrail_flags: list[str] = Field(
+        default_factory=list, description=GUARDRAIL_FLAGS_DESCRIPTION
+    )
     conversation_token: str | None = Field(
         default=None,
         description=(
@@ -836,6 +851,20 @@ class ErrorResponse(BaseModel):
     detail: str = Field(description="Human-readable cause.")
     engine: str | None = Field(
         default=None, description="Engine token that failed, when known."
+    )
+    guardrail_check: str | None = Field(
+        default=None,
+        description=(
+            "On guardrail_blocked, the check that fired: prompt_injection, "
+            "harmful_content, or a custom check's name. Never the text it read."
+        ),
+    )
+    guardrail_direction: str | None = Field(
+        default=None,
+        description=(
+            "On guardrail_blocked, 'input' when the request was refused and "
+            "'output' when the model's answer was."
+        ),
     )
     provider_status: int | None = Field(
         default=None,

@@ -344,6 +344,24 @@ def _cache_fields(result: Any) -> dict[str, Any]:
     return fields
 
 
+def _guardrail_fields(result: Any) -> dict[str, Any]:
+    """The response field a flagging guardrail check sets.
+
+    Library 3.24.0 puts the names of checks that fired with action `flag` on
+    every result envelope. A check set to block never reaches here: it raises
+    `AiGuardrailBlockedError`, mapped to 422 in errors.py.
+
+    Args:
+        result: The library's result envelope, or a test double without the
+            field, which reads as no flags.
+
+    Returns:
+        dict[str, Any]: `guardrail_flags`, in the order the library reported.
+    """
+    flags: Any = getattr(result, "guardrail_flags", None)
+    return {"guardrail_flags": [str(flag) for flag in flags] if flags else []}
+
+
 def _usd_cost(client: Any, usage: Any) -> str | None:
     """Price measured usage, or return None when the model has no rates.
 
@@ -781,6 +799,7 @@ async def completions(
             "usage": _usage(result.usage),
             "usd_cost": _usd_cost(_pricing_client(client, route), result.usage),
             **_cache_fields(result),
+            **_guardrail_fields(result),
         },
     )
 
@@ -834,6 +853,7 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
             "usage": _usage(result.usage),
             "usd_cost": _usd_cost(_pricing_client(client, route), result.usage),
             **_cache_fields(result),
+            **_guardrail_fields(result),
         },
         raw_text=result.raw_text,
         engine=route.engine,
@@ -907,6 +927,7 @@ async def conversation_turn(
             "usage": _usage(turn.usage),
             "usd_cost": _usd_cost(_pricing_client(client, route), turn.usage),
             **_cache_fields(turn),
+            **_guardrail_fields(turn),
         },
         conversation_token=_turn_token(client, turn),
         engine=route.engine,

@@ -11,6 +11,7 @@ because callers never hold provider keys and can do nothing about either.
 import pytest
 from ai_api_unified import (
     AiFallbackReason,
+    AiGuardrailBlockedError,
     AiProviderCapabilityUnsupportedError,
     AiProviderRequestError,
     StructuredResponseTokenLimitError,
@@ -85,6 +86,16 @@ _EXCEPTIONS: dict[str, Exception] = {
         fallback_reason=AiFallbackReason.QUOTA_EXHAUSTED,
         account_wide=False,
     ),
+    # Library 3.24.0: a policy decision, never failed over. Not an
+    # AiProviderRequestError, so it must have its own handler or it would
+    # fall through to the base's 502.
+    "guardrail": AiGuardrailBlockedError(
+        "guardrail blocked input",
+        check="prompt_injection",
+        direction="input",
+        backend="classifier",
+        score=0.93,
+    ),
     "config": AiProviderConfigurationError("model retired"),
     "capability": AiProviderCapabilityUnsupportedError("engine cannot stream"),
     "dependency": AiProviderDependencyUnavailableError("boto3 not installed"),
@@ -116,6 +127,7 @@ _EXCEPTIONS: dict[str, Exception] = {
         ("capability", 400, "invalid_request"),
         ("dependency", 503, "provider_dependency_unavailable"),
         ("token_limit", 422, "structured_response_token_limit"),
+        ("guardrail", 422, "guardrail_blocked"),
         ("base", 502, "provider_error"),
     ],
 )
@@ -125,6 +137,21 @@ def test_status_mapping(
     response = client.get(f"/boom/{kind}")
     assert response.status_code == expected_status
     assert response.json()["error"] == expected_error
+
+
+def test_a_guardrail_block_names_the_check_and_side_but_never_the_text(
+    client: TestClient,
+) -> None:
+    # The caller learns which policy fired and whether it was their request
+    # or the model's answer. The body is built from the exception's fields,
+    # not its message, so the checked text has no path into it.
+    body = client.get("/boom/guardrail").json()
+    assert body["guardrail_check"] == "prompt_injection"
+    assert body["guardrail_direction"] == "input"
+    assert "prompt_injection" in body["detail"]
+    assert "classifier" in body["detail"]
+    assert body["fallback_reason"] is None
+    assert body["engine"] is None
 
 
 @pytest.mark.parametrize("kind", ["provider_401", "provider_403"])
@@ -187,6 +214,8 @@ def test_error_body_shape_is_uniform(client: TestClient) -> None:
             "provider_status",
             "fallback_reason",
             "account_wide",
+            "guardrail_check",
+            "guardrail_direction",
         }
         assert isinstance(body["error"], str) and body["error"]
         assert isinstance(body["detail"], str) and body["detail"]
@@ -258,6 +287,8 @@ class TestErrorEnvelope:
             "provider_status",
             "fallback_reason",
             "account_wide",
+            "guardrail_check",
+            "guardrail_direction",
         }
         assert body["error"] == "internal_error"
 

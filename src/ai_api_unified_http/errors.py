@@ -25,6 +25,7 @@ from typing import Final
 
 from ai_api_unified import (
     AiFallbackReason,
+    AiGuardrailBlockedError,
     AiProviderCapabilityUnsupportedError,
     AiProviderRequestError,
     StructuredResponseTokenLimitError,
@@ -153,6 +154,8 @@ def _error_response(
     provider_status: int | None = None,
     fallback_reason: str | None = None,
     account_wide: bool | None = None,
+    guardrail_check: str | None = None,
+    guardrail_direction: str | None = None,
 ) -> JSONResponse:
     """Build the uniform error body shared by every failure path."""
     body = ErrorResponse(
@@ -162,8 +165,54 @@ def _error_response(
         provider_status=provider_status,
         fallback_reason=fallback_reason,
         account_wide=account_wide,
+        guardrail_check=guardrail_check,
+        guardrail_direction=guardrail_direction,
     )
     return JSONResponse(status_code=status_code, content=body.model_dump())
+
+
+def guardrail_block_detail(exc: AiGuardrailBlockedError) -> str:
+    """Describe a guardrail block without the text the check read.
+
+    The library's record names the check and never the content, and this
+    detail is built from those fields alone rather than the exception's
+    message, so nothing a caller sent or a model answered can leak into an
+    error body or a log line through it.
+    """
+    detail: str = (
+        f"guardrail {exc.check!r} blocked the {exc.direction} "
+        f"(decided by {exc.backend}"
+    )
+    if exc.score is not None:
+        detail += f", score {exc.score:.2f}"
+    if exc.categories:
+        detail += f", categories {', '.join(exc.categories)}"
+    return detail + ")"
+
+
+async def handle_guardrail_blocked(request: Request, exc: Exception) -> JSONResponse:
+    """Map a guardrail block onto 422 naming the check and the direction.
+
+    A block is a policy decision about this request or its answer, not a
+    provider failure: no fallback moves it to another model, and retrying it
+    unchanged will block again. 422 says the request was understood and
+    refused; the body says which check and which side, so a caller can tell
+    an input policy hit (their text) from an output one (the model's).
+    """
+    assert isinstance(exc, AiGuardrailBlockedError)
+    logger.info(
+        "guardrail blocked a call: check=%s direction=%s backend=%s",
+        exc.check,
+        exc.direction,
+        exc.backend,
+    )
+    return _error_response(
+        status_code=422,
+        error_code="guardrail_blocked",
+        detail=guardrail_block_detail(exc),
+        guardrail_check=exc.check,
+        guardrail_direction=exc.direction,
+    )
 
 
 async def handle_provider_request_error(
@@ -298,6 +347,7 @@ async def handle_provider_error(request: Request, exc: Exception) -> JSONRespons
 # walks the MRO, so the subclasses must be registered before their bases.
 EXCEPTION_HANDLERS: Final[list[tuple[type[Exception], object]]] = [
     (ProviderNotConfiguredError, handle_provider_not_configured),
+    (AiGuardrailBlockedError, handle_guardrail_blocked),
     (AiProviderRequestError, handle_provider_request_error),
     (AiProviderConfigurationError, handle_bad_request_error),
     (AiProviderCapabilityUnsupportedError, handle_bad_request_error),
