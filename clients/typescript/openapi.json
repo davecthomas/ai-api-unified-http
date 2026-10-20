@@ -783,6 +783,12 @@
       "CompletionResponse": {
         "description": "Buffered completion result.\n\nSent with the library's `asend_prompt_with_result`, whose envelope says\nwhich engine and model answered and what the call used, so this response\ncarries usage and cost like `/v1/structured` and `/v1/conversations/turn`.\nThere is no finish reason: the text call does not report one.",
         "properties": {
+          "cache_hit": {
+            "default": false,
+            "description": "True when the response cache answered and no provider was called; `usd_cost` is then \"0\" and `usd_saved` is what the original call cost.",
+            "title": "Cache Hit",
+            "type": "boolean"
+          },
           "engine": {
             "description": "Engine that served the request.",
             "title": "Engine",
@@ -826,6 +832,18 @@
             ],
             "description": "Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero \u2014 null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.",
             "title": "Usd Cost"
+          },
+          "usd_saved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a cache hit, the original call's cost in USD as a decimal string; null otherwise, or when that call was unpriced.",
+            "title": "Usd Saved"
           }
         },
         "required": [
@@ -982,6 +1000,12 @@
       "ConversationTurnResponse": {
         "description": "One assistant turn.\n\n`conversation_token` is opaque. Store it and echo it back on the next turn\nwithout inspecting it: it carries provider-specific content whose shape\nchanges with the engine and the library version, and parsing it would turn\na provider's internal representation into this service's contract.",
         "properties": {
+          "cache_hit": {
+            "default": false,
+            "description": "True when the response cache answered and no provider was called; `usd_cost` is then \"0\" and `usd_saved` is what the original call cost.",
+            "title": "Cache Hit",
+            "type": "boolean"
+          },
           "conversation_token": {
             "anyOf": [
               {
@@ -1052,6 +1076,18 @@
             ],
             "description": "Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero \u2014 null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.",
             "title": "Usd Cost"
+          },
+          "usd_saved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a cache hit, the original call's cost in USD as a decimal string; null otherwise, or when that call was unpriced.",
+            "title": "Usd Saved"
           }
         },
         "required": [
@@ -1913,6 +1949,12 @@
       "StructuredResponse": {
         "description": "Schema-validated structured output.\n\n`data` is null whenever `finish_reason` is not `complete`: the model was\ncut off by the token budget or refused. Read `finish_reason` before `data`,\nor a truncated response is indistinguishable from an empty result.",
         "properties": {
+          "cache_hit": {
+            "default": false,
+            "description": "True when the response cache answered and no provider was called; `usd_cost` is then \"0\" and `usd_saved` is what the original call cost.",
+            "title": "Cache Hit",
+            "type": "boolean"
+          },
           "data": {
             "anyOf": [
               {
@@ -1971,6 +2013,18 @@
             ],
             "description": "Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero \u2014 null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.",
             "title": "Usd Cost"
+          },
+          "usd_saved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a cache hit, the original call's cost in USD as a decimal string; null otherwise, or when that call was unpriced.",
+            "title": "Usd Saved"
           }
         },
         "required": [

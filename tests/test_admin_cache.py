@@ -5,9 +5,13 @@ them, a client key does not, and they report and clear the library's cache
 as this process sees it.
 """
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from ai_api_unified import AIPromptResult, AIRequestCostReport
 from ai_api_unified.ai_base import AIBaseCompletions, AICompletionsCapabilitiesBase
 from fastapi.testclient import TestClient
 
@@ -130,3 +134,37 @@ def response_text(body: dict) -> str:
     import json
 
     return json.dumps(body)
+
+
+class TestHitOnTheWire:
+    def test_a_hit_reports_zero_cost_and_what_it_saved(
+        self, client: TestClient
+    ) -> None:
+        """The service prices usage itself; a hit's stored usage must not be."""
+        hit = AIPromptResult(
+            text="cached",
+            cache_hit=True,
+            usd_saved=Decimal("0.000035"),
+            cost=AIRequestCostReport(
+                request_id="r",
+                operation="completions",
+                status="ok",
+                started_at_utc=datetime.now(UTC),
+                elapsed_ms=0.0,
+                cache_hit=True,
+                usd_saved=Decimal("0.000035"),
+            ),
+        )
+        fake = MagicMock()
+        fake.asend_prompt_with_result = AsyncMock(return_value=hit)
+        fake.capabilities.pricing.token_rates = {"input": "1", "output": "1"}
+        with patch(
+            "ai_api_unified_http.routes_v1.get_completions_client", return_value=fake
+        ):
+            body = client.post(
+                "/v1/completions", json={"engine": "claude", "prompt": "hi"}
+            ).json()
+        assert body["text"] == "cached"
+        assert body["cache_hit"] is True
+        assert body["usd_cost"] == "0"
+        assert body["usd_saved"] == "0.000035"

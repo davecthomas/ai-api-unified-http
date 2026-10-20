@@ -223,9 +223,11 @@ wants a fresh answer each time passes `"cache": "off"` in `provider_options`
 
 The cache is in memory and per worker, like the rate limiter: each worker
 fills its own, so a request can miss on one worker after hitting on another.
-Hits are metered as `ai_api_request_cost` events with `cache_hit: true`,
-`total_usd: "0"`, and `usd_saved`, under the caller's headers, so the cost
-sink shows what caching saves per caller.
+A hit answers with `cache_hit: true`, `usd_cost: "0"`, and `usd_saved` (what
+the original call cost) on the completions, structured, and conversation
+responses. Hits are also metered as `ai_api_request_cost` events with the
+same two fields, under the caller's headers, so the cost sink shows what
+caching saves per caller.
 
 Two operator endpoints show and clear it, behind `HTTP_ADMIN_KEYS` (same
 `label:key` form as `HTTP_API_KEYS`; a client key never opens them, and with
@@ -258,8 +260,10 @@ a provider problem.
 ## Run
 
 ```bash
-make serve          # http://localhost:8080, API key: local-dev-key
+make serve          # http://localhost:8080, API key: local-dev-key, admin key: local-admin-key
 make smoke          # live checks against a running server
+make smoke-cache    # live response cache demo: miss, hit, admin view, clear
+make test-cache     # the response cache and admin endpoint tests only
 ```
 
 `make help` lists every target. `make smoke` calls real providers and costs a

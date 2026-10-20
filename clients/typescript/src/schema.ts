@@ -939,6 +939,12 @@ export interface components {
          */
         CompletionResponse: {
             /**
+             * Cache Hit
+             * @description True when the response cache answered and no provider was called; `usd_cost` is then "0" and `usd_saved` is what the original call cost.
+             * @default false
+             */
+            cache_hit: boolean;
+            /**
              * Engine
              * @description Engine that served the request.
              */
@@ -966,6 +972,11 @@ export interface components {
              * @description Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero — null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.
              */
             usd_cost?: string | null;
+            /**
+             * Usd Saved
+             * @description On a cache hit, the original call's cost in USD as a decimal string; null otherwise, or when that call was unpriced.
+             */
+            usd_saved?: string | null;
         };
         /** ConversationTurnRequest */
         ConversationTurnRequest: {
@@ -1029,6 +1040,12 @@ export interface components {
          */
         ConversationTurnResponse: {
             /**
+             * Cache Hit
+             * @description True when the response cache answered and no provider was called; `usd_cost` is then "0" and `usd_saved` is what the original call cost.
+             * @default false
+             */
+            cache_hit: boolean;
+            /**
              * Conversation Token
              * @description Opaque. Echo back verbatim as previous_turn_token on the next turn. Never parse it; the encoding is an implementation detail that changes between service versions.
              */
@@ -1058,6 +1075,11 @@ export interface components {
              * @description Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero — null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.
              */
             usd_cost?: string | null;
+            /**
+             * Usd Saved
+             * @description On a cache hit, the original call's cost in USD as a decimal string; null otherwise, or when that call was unpriced.
+             */
+            usd_saved?: string | null;
         };
         /**
          * EmbeddingVector
@@ -1461,6 +1483,12 @@ export interface components {
          */
         StructuredResponse: {
             /**
+             * Cache Hit
+             * @description True when the response cache answered and no provider was called; `usd_cost` is then "0" and `usd_saved` is what the original call cost.
+             * @default false
+             */
+            cache_hit: boolean;
+            /**
              * Data
              * @description Parsed object, or null when finish_reason is not 'complete'.
              */
@@ -1493,6 +1521,11 @@ export interface components {
              * @description Cost of this call in USD, priced from the usage above, or null when the model carries no token rates in the registry. A string for the same reason the rates are strings: these are decimal money values, and binary floating point cannot hold them exactly. Null is not zero — null means the price is unknown, and a call that genuinely cost nothing reports a numeric zero.
              */
             usd_cost?: string | null;
+            /**
+             * Usd Saved
+             * @description On a cache hit, the original call's cost in USD as a decimal string; null otherwise, or when that call was unpriced.
+             */
+            usd_saved?: string | null;
         };
         /** TokenCountRequest */
         TokenCountRequest: {
