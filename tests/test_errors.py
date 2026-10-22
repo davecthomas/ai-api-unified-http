@@ -225,6 +225,8 @@ def test_error_body_shape_is_uniform(client: TestClient) -> None:
             "account_wide",
             "guardrail_check",
             "guardrail_direction",
+            "guardrail_source",
+            "guardrail_tool_call_ids",
         }
         assert isinstance(body["error"], str) and body["error"]
         assert isinstance(body["detail"], str) and body["detail"]
@@ -303,6 +305,8 @@ class TestErrorEnvelope:
             "account_wide",
             "guardrail_check",
             "guardrail_direction",
+            "guardrail_source",
+            "guardrail_tool_call_ids",
         }
         assert body["error"] == "internal_error"
 

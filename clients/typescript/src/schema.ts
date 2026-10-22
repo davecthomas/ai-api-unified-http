@@ -1063,6 +1063,11 @@ export interface components {
              */
             finish_reason: string;
             /**
+             * Guardrail Flagged Tool Calls
+             * @description Ids of the tool calls whose results a flagging prompt_injection check fired on this turn. Each new tool result (one after the model's last turn) is checked on its own, as data that should carry no instructions for the assistant.
+             */
+            guardrail_flagged_tool_calls?: string[];
+            /**
              * Guardrail Flags
              * @description Names of the deployment's guardrail checks that fired with action 'flag' on this call, on the request or the answer. The call went through; a check set to block answers 422 guardrail_blocked instead. Empty when no check fired or guardrails are off.
              */
@@ -1183,6 +1188,16 @@ export interface components {
              * @description On guardrail_blocked, 'input' when the request was refused and 'output' when the model's answer was.
              */
             guardrail_direction?: string | null;
+            /**
+             * Guardrail Source
+             * @description On guardrail_blocked, 'request' when the caller's own text fired and 'tool_result' when a tool result in the history did.
+             */
+            guardrail_source?: string | null;
+            /**
+             * Guardrail Tool Call Ids
+             * @description On a tool_result block, the ids of the tool calls whose results fired. Drop or redact those results and send the turn again; unchanged, it blocks again.
+             */
+            guardrail_tool_call_ids?: string[];
             /**
              * Provider Status
              * @description HTTP status reported by the provider, when one was reported.

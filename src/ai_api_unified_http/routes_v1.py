@@ -928,6 +928,10 @@ async def conversation_turn(
             "usd_cost": _usd_cost(_pricing_client(client, route), turn.usage),
             **_cache_fields(turn),
             **_guardrail_fields(turn),
+            "guardrail_flagged_tool_calls": [
+                str(call_id)
+                for call_id in getattr(turn, "guardrail_flagged_tool_calls", None) or []
+            ],
         },
         conversation_token=_turn_token(client, turn),
         engine=route.engine,

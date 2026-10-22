@@ -380,6 +380,15 @@ class ConversationTurnResponse(BaseModel):
     guardrail_flags: list[str] = Field(
         default_factory=list, description=GUARDRAIL_FLAGS_DESCRIPTION
     )
+    guardrail_flagged_tool_calls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ids of the tool calls whose results a flagging prompt_injection "
+            "check fired on this turn. Each new tool result (one after the "
+            "model's last turn) is checked on its own, as data that should "
+            "carry no instructions for the assistant."
+        ),
+    )
     conversation_token: str | None = Field(
         default=None,
         description=(
@@ -864,6 +873,21 @@ class ErrorResponse(BaseModel):
         description=(
             "On guardrail_blocked, 'input' when the request was refused and "
             "'output' when the model's answer was."
+        ),
+    )
+    guardrail_source: str | None = Field(
+        default=None,
+        description=(
+            "On guardrail_blocked, 'request' when the caller's own text fired "
+            "and 'tool_result' when a tool result in the history did."
+        ),
+    )
+    guardrail_tool_call_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "On a tool_result block, the ids of the tool calls whose results "
+            "fired. Drop or redact those results and send the turn again; "
+            "unchanged, it blocks again."
         ),
     )
     provider_status: int | None = Field(

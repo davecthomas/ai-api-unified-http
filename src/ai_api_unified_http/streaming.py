@@ -126,6 +126,8 @@ async def sse_from_sync_iterator(
                 "detail": guardrail_block_detail(blocked),
                 "guardrail_check": blocked.check,
                 "guardrail_direction": blocked.direction,
+                "guardrail_source": blocked.source,
+                "guardrail_tool_call_ids": list(blocked.tool_call_ids),
                 "engine": engine,
                 "chunks_delivered": chunk_count,
             },
