@@ -157,6 +157,8 @@ def _error_response(
     account_wide: bool | None = None,
     guardrail_check: str | None = None,
     guardrail_direction: str | None = None,
+    guardrail_source: str | None = None,
+    guardrail_tool_call_ids: list[str] | None = None,
 ) -> JSONResponse:
     """Build the uniform error body shared by every failure path."""
     body = ErrorResponse(
@@ -168,6 +170,8 @@ def _error_response(
         account_wide=account_wide,
         guardrail_check=guardrail_check,
         guardrail_direction=guardrail_direction,
+        guardrail_source=guardrail_source,
+        guardrail_tool_call_ids=list(guardrail_tool_call_ids or []),
     )
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
@@ -180,9 +184,14 @@ def guardrail_block_detail(exc: AiGuardrailBlockedError) -> str:
     message, so nothing a caller sent or a model answered can leak into an
     error body or a log line through it.
     """
+    tuple_ids: tuple[str, ...] = tuple(getattr(exc, "tool_call_ids", ()) or ())
+    str_what: str = (
+        f"the results of tool calls {', '.join(tuple_ids)}"
+        if getattr(exc, "source", None) == "tool_result" and tuple_ids
+        else f"the {exc.direction}"
+    )
     detail: str = (
-        f"guardrail {exc.check!r} blocked the {exc.direction} "
-        f"(decided by {exc.backend}"
+        f"guardrail {exc.check!r} blocked {str_what} (decided by {exc.backend}"
     )
     if exc.score is not None:
         detail += f", score {exc.score:.2f}"
@@ -202,10 +211,11 @@ async def handle_guardrail_blocked(request: Request, exc: Exception) -> JSONResp
     """
     assert isinstance(exc, AiGuardrailBlockedError)
     logger.info(
-        "guardrail blocked a call: check=%s direction=%s backend=%s",
+        "guardrail blocked a call: check=%s direction=%s backend=%s source=%s",
         exc.check,
         exc.direction,
         exc.backend,
+        exc.source,
     )
     return _error_response(
         status_code=422,
@@ -213,6 +223,8 @@ async def handle_guardrail_blocked(request: Request, exc: Exception) -> JSONResp
         detail=guardrail_block_detail(exc),
         guardrail_check=exc.check,
         guardrail_direction=exc.direction,
+        guardrail_source=exc.source,
+        guardrail_tool_call_ids=list(exc.tool_call_ids),
     )
 
 

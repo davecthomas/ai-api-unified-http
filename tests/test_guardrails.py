@@ -224,6 +224,107 @@ class TestBlocks:
         assert events[-1]["data"]["error"] == "guardrail_blocked"
 
 
+def _tool_blocked() -> AiGuardrailBlockedError:
+    return AiGuardrailBlockedError(
+        f"blocked: {_CHECKED_TEXT}",
+        check="prompt_injection",
+        direction="input",
+        backend="classifier",
+        score=0.95,
+        source="tool_result",
+        tool_call_ids=("toolu_2",),
+    )
+
+
+# Library 3.28.0: prompt_injection judges each new tool result on its own.
+# The payloads here are neutral data; the check itself is the library's.
+_TOOL_TURN: dict[str, Any] = {
+    "engine": "claude",
+    "system_prompt": "s",
+    "messages": [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_2", "content": "{}"}
+            ],
+        },
+    ],
+}
+
+
+class TestToolResults:
+    def test_a_tool_result_block_names_the_tool_calls(self, client: TestClient) -> None:
+        fake = _fake()
+        fake.asend_conversation = AsyncMock(side_effect=_tool_blocked())
+        with _pooled(fake):
+            response = client.post("/v1/conversations/turn", json=_TOOL_TURN)
+        assert response.status_code == 422
+        body = response.json()
+        assert body["guardrail_source"] == "tool_result"
+        assert body["guardrail_tool_call_ids"] == ["toolu_2"]
+        assert "tool calls toolu_2" in body["detail"]
+        assert _CHECKED_TEXT not in response.text
+
+    def test_a_request_block_has_no_tool_call_ids(self, client: TestClient) -> None:
+        fake = _fake()
+        fake.asend_prompt_with_result = AsyncMock(side_effect=_blocked())
+        with _pooled(fake):
+            body = client.post(
+                "/v1/completions", json={"engine": "claude", "prompt": "hi"}
+            ).json()
+        assert body["guardrail_source"] == "request"
+        assert body["guardrail_tool_call_ids"] == []
+
+    def test_a_turn_lists_the_flagged_tool_calls(self, client: TestClient) -> None:
+        fake = _fake()
+        fake.asend_conversation = AsyncMock(
+            return_value=AITurnResult(
+                text="t",
+                finish_reason=AIFinishReason.COMPLETE,
+                guardrail_flags=["prompt_injection"],
+                guardrail_flagged_tool_calls=["toolu_2"],
+            )
+        )
+        fake.extend_messages_with_turn.side_effect = lambda messages, turn: messages
+        with _pooled(fake):
+            body = client.post("/v1/conversations/turn", json=_TOOL_TURN).json()
+        assert body["guardrail_flags"] == ["prompt_injection"]
+        assert body["guardrail_flagged_tool_calls"] == ["toolu_2"]
+
+    def test_the_tool_result_reaches_the_library_in_its_engine_shape(
+        self, client: TestClient
+    ) -> None:
+        # The library recognizes tool results by each engine's own shape, so
+        # the service must pass the caller's messages through unchanged.
+        fake = _fake()
+        fake.asend_conversation = AsyncMock(
+            return_value=AITurnResult(text="t", finish_reason=AIFinishReason.COMPLETE)
+        )
+        fake.extend_messages_with_turn.side_effect = lambda messages, turn: messages
+        with _pooled(fake):
+            client.post("/v1/conversations/turn", json=_TOOL_TURN)
+        sent = fake.asend_conversation.call_args
+        messages = sent.kwargs.get("messages") or sent.args[1]
+        assert messages[-1] == _TOOL_TURN["messages"][-1]
+
+    def test_a_stream_block_carries_the_same_fields(self, client: TestClient) -> None:
+        def _stream() -> Any:
+            raise _tool_blocked()
+            yield  # pragma: no cover - makes this a generator
+
+        fake = _fake()
+        fake.send_prompt_streaming = MagicMock(return_value=_stream())
+        with _pooled(fake):
+            response = client.post(
+                "/v1/completions",
+                json={"engine": "claude", "prompt": "hi", "stream": True},
+            )
+        error = _sse_events(response.text)[0]["data"]
+        assert error["guardrail_source"] == "tool_result"
+        assert error["guardrail_tool_call_ids"] == ["toolu_2"]
+
+
 class TestShippedProfile:
     def _entry(self) -> dict[str, Any]:
         config = json.loads((REPO_ROOT / "config" / "models.json").read_text())

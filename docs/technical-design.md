@@ -231,6 +231,21 @@ blocks out, since a `guardrail_id` or an endpoint changes what `auto` picks.
 unsupported engine and raises `AiProviderConfigurationValueError` with the
 provider's message: see "Error mapping".
 
+**Library 3.26.1 through 3.28.0.** One pin step, service 1.17.0. 3.26.1
+and 3.27.0 change only Google service-account (Vertex) auth: the key file
+named in `.env` is loaded, and the location defaults to `global`. The
+service authenticates Google with an API key, so neither reaches it. 3.28.0
+gives `prompt_injection` a separate pass over tool results: each new one
+in a conversation is judged alone, as data that should hold no
+instructions for the assistant, and the library recognizes tool results by
+each engine's own shape, which is what callers already send in
+`messages`. `AiGuardrailBlockedError` gains `source` and `tool_call_ids`,
+and `AITurnResult` gains `guardrail_flagged_tool_calls`. The service copies
+them onto the 422 body (`guardrail_source`, `guardrail_tool_call_ids`), the
+stream's `error` event, and the turn response. The ids are the caller's own
+identifiers, not checked text, so they keep the rule that no checked text
+reaches a response or a log line.
+
 **Why 2.32.1 was required.** On 2.32.0 a turn that failed over from Claude to
 OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
 `{"role": "assistant", "content": "...", "annotations": []}`, the wrapper read

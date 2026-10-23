@@ -9,4 +9,4 @@ suite (tests/test_version_sync.py) fails whenever the three disagree.
 
 __all__: list[str] = ["__version__"]
 
-__version__: str = "1.16.0"
+__version__: str = "1.17.0"

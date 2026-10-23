@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.16.0
+# ai-api-unified-http 1.17.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -269,20 +269,32 @@ every field.
   classifier.
 - **`custom`** rules: `terms` and `patterns` that cost nothing, or a yes/no
   `question` for the classifier.
+- **Tool results** (library 3.28.0): on `/v1/conversations/turn`, each new
+  tool result in `messages` (one after the model's last turn) gets its own
+  `prompt_injection` pass. A tool should return data, so text in it
+  addressed to the assistant is suspect, while instructions meant for a
+  person (a recipe, a notice) pass. Tool results are recognized in the
+  shape each engine uses, the shape you already send them in (for Claude,
+  a `tool_result` block in a user message). `prompt_injection.tool_results`
+  sets their own `threshold` and `action`.
 
 A check that fires either **blocks** or **flags**, per `on_fail` or its own
 `action`. A block answers **422 `guardrail_blocked`** with `guardrail_check`
 and `guardrail_direction` (`input`: the caller's text; `output`: the model's
-answer) in the error body. No fallback moves a blocked call to another
-model, and retrying it unchanged blocks again. A flag lets the call through
-and lists the check in `guardrail_flags` on the response. Neither the error
+answer) in the error body, plus `guardrail_source` (`request` or
+`tool_result`) and, for a tool result, `guardrail_tool_call_ids`: drop or
+redact those results and send the turn again. No fallback moves a blocked
+call to another model, and retrying it unchanged blocks again. A flag lets
+the call through and lists the check in `guardrail_flags` on the response;
+a flagged tool result also lists its call id in the turn's
+`guardrail_flagged_tool_calls`. Neither the error
 body, the response, nor any log line carries the text a check read.
 
 Streams get the input checks only. On a plain engine the check runs before
 the stream opens, so a block is the same 422. Behind a fallback chain it runs
 at the first chunk, after the 200 status line is sent, so the block arrives
 as the stream's `error` event with `error: "guardrail_blocked"` and the same
-two fields. `on_error` decides what
+fields. `on_error` decides what
 a check that cannot run does (a classifier outage): `block` refuses the
 call, `allow` lets it through with a warning.
 
