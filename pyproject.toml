@@ -1,7 +1,7 @@
 [project]
 name = "ai_api_unified_http"
 
-version = "1.17.1" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
+version = "1.18.0" # keep in sync with src/ai_api_unified_http/__version__.py and the README.md title
 description = "HTTP service exposing ai-api-unified to non-Python apps"
 authors = [{ name = "Dave Thomas", email = "davidcthomas@gmail.com" }]
 license = "MIT"
@@ -23,12 +23,17 @@ dependencies = [
     # Production server. docs/technical-design.md specifies gunicorn with
     # uvicorn workers; the container runs it, so it is a runtime dependency.
     "gunicorn (>=22.0,<24.0)",
+    # Run grants live in Redis (run_grants.py). Only a deployment that sets
+    # HTTP_REDIS_URL opens a connection; the rest never touch it.
+    "redis (>=5.0,<9.0)",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest (>=8.0)",
     "httpx (>=0.27)",
+    # An in-process Redis for the run-grant tests, so they need no server.
+    "fakeredis (>=2.26)",
     "black (>=24.0)",
     "ruff (>=0.5)",
 ]

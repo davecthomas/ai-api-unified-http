@@ -32,7 +32,14 @@ from .logging_setup import configure_logging
 from .rate_limit import RateLimitMiddleware, rate_limit, window_seconds
 from .request_limits import RequestSizeLimitMiddleware, max_request_bytes
 from .routes_admin import router as admin_router
+from .routes_run_grants import router as run_grants_router
 from .routes_v1 import router as v1_router
+from .run_grants import (
+    REDIS_URL_ENV,
+    RunGrantStore,
+    RunGrantStoreUnavailableError,
+    run_grant_store,
+)
 from .schemas import HealthResponse
 
 API_VERSION: str = "v1"
@@ -107,6 +114,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.getLogger(__name__).warning(
             "request size limiting is DISABLED; one call can carry any payload"
         )
+
+    # A Redis that is down at startup does not stop the service: only run
+    # grants need it, and those answer 503 until it is reachable.
+    store: RunGrantStore | None = run_grant_store(app)
+    if store is None:
+        logging.getLogger(__name__).info(
+            "run grants: off (set %s to enable)", REDIS_URL_ENV
+        )
+    else:
+        try:
+            await store.ping()
+            logging.getLogger(__name__).info("run grants: on, Redis reachable")
+        except RunGrantStoreUnavailableError as error:
+            logging.getLogger(__name__).error(
+                "run grants: on, but Redis is unreachable (%s); grant requests "
+                "answer 503 until it is",
+                error,
+            )
     yield
 
 
@@ -152,6 +177,7 @@ def create_app() -> FastAPI:
         allow_headers=["content-type", "authorization"],
     )
     app.include_router(v1_router)
+    app.include_router(run_grants_router)
     app.include_router(admin_router)
 
     def _health() -> HealthResponse:

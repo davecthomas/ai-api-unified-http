@@ -270,7 +270,13 @@ export interface paths {
          * One stateless conversation turn, with optional tool schemas
          * @description Run one assistant turn; the caller owns history and tool execution.
          *
+         *     With a grant key, the run grant decides the engine and model, and the turn
+         *     is refused with 402 once the run has spent its limit. The turn's cost is
+         *     then added to the run's spend.
+         *
          *     Args:
+         *         http_request: The HTTP request, carrying the run grant when a grant
+         *             key authenticated it.
          *         request: System prompt, full history, optional tools, and the previous
          *             turn's opaque token.
          *
@@ -369,6 +375,50 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/run-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a run grant and its key
+         * @description Issue a grant for one run, or a new key for a live grant with the same terms.
+         */
+        post: operations["issue_run_grant_v1_run_grants_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/run-grants/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A run grant and its spend */
+        get: operations["get_run_grant_v1_run_grants__run_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a run grant and all its keys
+         * @description End the grant. Revoking one that is gone answers 200 with revoked false.
+         *
+         *     A caller revokes on every end of a run, retries included, so a second
+         *     revoke must not fail.
+         */
+        delete: operations["revoke_run_grant_v1_run_grants__run_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -987,9 +1037,9 @@ export interface components {
         ConversationTurnRequest: {
             /**
              * Engine
-             * @description Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.
+             * @description Completions engine token, e.g. 'openai', 'claude', 'google-gemini'. Required with an API key. With a grant key, the run grant names the engine and model, and these two fields are ignored.
              */
-            engine: string;
+            engine?: string | null;
             /**
              * Fallback
              * @description Whether the request may be retried on the deployment's fallback chain (completions.fallbacks in models.json) when the requested model is overloaded, rate limited past its backoff, or out of quota. Set false when only the requested model will do. Has no effect on a deployment with no chain. A candidate that failed recently is resting, and a request during its rest starts on the next candidate without asking it.
@@ -1074,6 +1124,8 @@ export interface components {
             guardrail_flags?: string[];
             /** Model */
             model?: string | null;
+            /** @description Present when the request used a grant key: the run's spend so far, this turn included, and its limit. */
+            run_grant?: components["schemas"]["RunGrantSpend"] | null;
             /**
              * Served By Fallback
              * @description True when the requested model failed and a fallback answered. `engine` and `model` then name the fallback, and `usd_cost` is priced at it.
@@ -1401,6 +1453,127 @@ export interface components {
              * @enum {string}
              */
             retention: "default" | "extended";
+        };
+        /**
+         * RunGrantRequest
+         * @description Ask for a run grant. The response carries the grant key for the sandbox.
+         */
+        RunGrantRequest: {
+            /**
+             * Caller Id
+             * @description Stamped on the run's cost events, in place of X-Caller-Id.
+             */
+            caller_id?: string | null;
+            /**
+             * Engine
+             * @description Completions engine every turn runs on.
+             */
+            engine: string;
+            /**
+             * Model
+             * @description Model every turn runs on; omit for the engine's default.
+             */
+            model?: string | null;
+            /**
+             * Run Id
+             * @description The run this grant is for, chosen by the caller. Asking again for a live run_id with the same terms returns a new key for the same grant.
+             */
+            run_id: string;
+            /**
+             * Session Id
+             * @description Stamped on the run's cost events, in place of X-Session-Id.
+             */
+            session_id?: string | null;
+            /**
+             * Spend Limit Usd
+             * @description Turns are refused once the run has spent this much, as a decimal string, e.g. '0.50'.
+             */
+            spend_limit_usd: string;
+            /**
+             * Tags
+             * @description Extra tags on the run's cost events, emitted as tag_<name>.
+             */
+            tags?: {
+                [key: string]: string;
+            };
+            /**
+             * Ttl Seconds
+             * @description Lifetime of the grant and its keys.
+             * @default 3600
+             */
+            ttl_seconds: number;
+            /**
+             * Workflow Id
+             * @description Stamped on the run's cost events, in place of X-Workflow-Id.
+             */
+            workflow_id?: string | null;
+        };
+        /**
+         * RunGrantResponse
+         * @description A run grant. `grant_key` is present only on the response that issued it.
+         */
+        RunGrantResponse: {
+            /**
+             * Created
+             * @description True when this call created the grant, false when it added a key.
+             * @default false
+             */
+            created: boolean;
+            /** Engine */
+            engine: string;
+            /**
+             * Expires At
+             * @description ISO 8601, UTC.
+             */
+            expires_at: string;
+            /**
+             * Grant Key
+             * @description Present once, on the response that issued it. Give it to the run as its bearer key. The service keeps only a hash and cannot show it again.
+             */
+            grant_key?: string | null;
+            /** Model */
+            model: string;
+            /** Run Id */
+            run_id: string;
+            /** Spend Limit Usd */
+            spend_limit_usd: string;
+            /** Spent Usd */
+            spent_usd: string;
+        };
+        /** RunGrantRevokeResponse */
+        RunGrantRevokeResponse: {
+            /**
+             * Revoked
+             * @description True when a live grant was ended, false when there was none.
+             */
+            revoked: boolean;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Spent Usd
+             * @description What the run spent, at revocation.
+             */
+            spent_usd: string;
+        };
+        /**
+         * RunGrantSpend
+         * @description A run's spend against its grant, as of the response it rides on.
+         */
+        RunGrantSpend: {
+            /**
+             * Expires At
+             * @description ISO 8601, UTC.
+             */
+            expires_at: string;
+            /** Run Id */
+            run_id: string;
+            /** Spend Limit Usd */
+            spend_limit_usd: string;
+            /**
+             * Spent Usd
+             * @description Spend so far, as an exact decimal string.
+             */
+            spent_usd: string;
         };
         /**
          * SpeechRequest
@@ -2333,6 +2506,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Payment Required */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2531,6 +2713,236 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    issue_run_grant_v1_run_grants_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunGrantResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_run_grant_v1_run_grants__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunGrantResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_run_grant_v1_run_grants__run_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunGrantRevokeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

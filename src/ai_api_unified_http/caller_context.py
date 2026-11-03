@@ -28,7 +28,7 @@ an email address or a name, because whatever they send lands in the cost sink.
 
 import logging
 import re
-from typing import Final
+from typing import Any, Final
 
 from ai_api_unified.middleware import (
     reset_observability_context,
@@ -122,6 +122,18 @@ class CallerContextMiddleware(BaseHTTPMiddleware):
         # tag_<name>. Passing them only as context fields would attribute spend
         # to a user but leave the session invisible in the record that bills.
         tags: dict[str, str] = {}
+
+        # A grant key's run is attributed by its grant, never by headers: the
+        # sandbox sends the request, and what it asserts about itself is not
+        # something the issuer vouched for.
+        grant: Any = getattr(request.state, "run_grant", None)
+        if grant is not None:
+            caller_id = grant.caller_id
+            session_id = grant.session_id
+            workflow_id = grant.workflow_id
+            tags.update(grant.tags)
+            tags["run_id"] = grant.run_id
+
         if session_id is not None:
             tags["session_id"] = session_id
         if workflow_id is not None:

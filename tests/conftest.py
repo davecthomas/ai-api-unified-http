@@ -20,7 +20,7 @@ from ai_api_unified import AiCandidateCooldowns, reset_response_cache, set_cache
 from ai_api_unified.ai_models_config import clear_models_config_cache
 from fastapi.testclient import TestClient
 
-from ai_api_unified_http import auth, config, cost
+from ai_api_unified_http import auth, config, cost, run_grants
 from ai_api_unified_http.app import create_app
 
 TEST_API_KEY: str = "test-suite-key"
@@ -49,6 +49,9 @@ def service_env(
 
     monkeypatch.setenv(auth.API_KEYS_ENV, f"tests:{TEST_API_KEY}")
     monkeypatch.delenv(auth.AUTH_DISABLED_ENV, raising=False)
+    # A developer's Redis would turn run grants on in every test. Tests that
+    # want them put a fakeredis store on the app themselves.
+    monkeypatch.delenv(run_grants.REDIS_URL_ENV, raising=False)
 
     # Set explicitly rather than letting startup fill it in. apply_default_
     # models_config writes to os.environ, which outlives the test that

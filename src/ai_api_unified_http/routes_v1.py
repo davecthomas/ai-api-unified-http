@@ -68,6 +68,14 @@ from .conversation_token import (
 from .delivery import artifact_response, not_found
 from .fallback import ServedRoute, served_route_of_report, served_route_of_result
 from .jobs import run_video_job
+from .run_grants import (
+    RunGrant,
+    RunGrantSpendLimitError,
+    RunGrantStore,
+    picodollars_to_usd,
+    run_grant_store,
+    usd_to_picodollars,
+)
 from .schemas import (
     MAX_VOICES_RETURNED,
     ArtifactRef,
@@ -93,6 +101,7 @@ from .schemas import (
     ModelsResponse,
     NotImplementedResponse,
     PromptCache,
+    RunGrantSpend,
     SpeechRequest,
     SpeechResponse,
     StructuredRequest,
@@ -867,16 +876,24 @@ async def structured(request: StructuredRequest) -> StructuredResponse:
     responses={
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
+        402: {"model": ErrorResponse},
         502: {"model": ErrorResponse},
     },
     summary="One stateless conversation turn, with optional tool schemas",
 )
 async def conversation_turn(
+    http_request: Request,
     request: ConversationTurnRequest,
 ) -> ConversationTurnResponse:
     """Run one assistant turn; the caller owns history and tool execution.
 
+    With a grant key, the run grant decides the engine and model, and the turn
+    is refused with 402 once the run has spent its limit. The turn's cost is
+    then added to the run's spend.
+
     Args:
+        http_request: The HTTP request, carrying the run grant when a grant
+            key authenticated it.
         request: System prompt, full history, optional tools, and the previous
             turn's opaque token.
 
@@ -884,6 +901,14 @@ async def conversation_turn(
         ConversationTurnResponse: The assistant turn, any tool calls the caller
             must execute, and the token to echo back next turn.
     """
+    grant: RunGrant | None = getattr(http_request.state, "run_grant", None)
+    engine: str | None = grant.engine if grant is not None else request.engine
+    model: str | None = grant.model if grant is not None else request.model
+    if engine is None:
+        raise HTTPException(
+            status_code=400, detail="engine is required unless a grant key is used."
+        )
+
     try:
         messages: list[dict[str, Any]] = _expand_conversation_tokens(request.messages)
     except InvalidConversationTokenError as error:
@@ -891,9 +916,17 @@ async def conversation_turn(
         # token costs no provider call.
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    client = get_completions_client(
-        request.engine, request.model, fallback=request.fallback
-    )
+    store: RunGrantStore | None = None
+    if grant is not None:
+        store = run_grant_store(http_request.app)
+        assert store is not None  # the authenticator found the grant in it
+        spent: int = await store.spent_picodollars(grant.run_id)
+        if spent >= grant.spend_limit_picodollars():
+            raise RunGrantSpendLimitError(
+                grant.run_id, picodollars_to_usd(spent), str(grant.spend_limit_usd)
+            )
+
+    client = get_completions_client(engine, model, fallback=request.fallback)
     try:
         turn = await client.asend_conversation(
             request.system_prompt,
@@ -913,9 +946,14 @@ async def conversation_turn(
         if request.tool_choice is None or _FORCED_TOOL_CHOICE not in str(error):
             raise
         raise HTTPException(status_code=400, detail=str(error)) from error
-    route: ServedRoute = served_route_of_result(
-        client, request.engine, request.model, turn
-    )
+    route: ServedRoute = served_route_of_result(client, engine, model, turn)
+    cost_fields: dict[str, Any] = {
+        "usd_cost": _usd_cost(_pricing_client(client, route), turn.usage),
+        **_cache_fields(turn),
+    }
+    run_spend: RunGrantSpend | None = None
+    if grant is not None and store is not None:
+        run_spend = await _record_run_spend(store, grant, cost_fields["usd_cost"])
     return ConversationTurnResponse(
         text=turn.text,
         tool_calls=[
@@ -925,8 +963,7 @@ async def conversation_turn(
         finish_reason=turn.finish_reason.value,
         **{
             "usage": _usage(turn.usage),
-            "usd_cost": _usd_cost(_pricing_client(client, route), turn.usage),
-            **_cache_fields(turn),
+            **cost_fields,
             **_guardrail_fields(turn),
             "guardrail_flagged_tool_calls": [
                 str(call_id)
@@ -937,6 +974,32 @@ async def conversation_turn(
         engine=route.engine,
         model=route.model,
         served_by_fallback=route.served_by_fallback,
+        run_grant=run_spend,
+    )
+
+
+async def _record_run_spend(
+    store: RunGrantStore, grant: RunGrant, usd_cost: str | None
+) -> RunGrantSpend:
+    """Add a turn's cost to its run and report the run's new total.
+
+    The grant pins a priced model, but a fallback can serve a turn on one the
+    service cannot price. That turn adds nothing it could count, and the log
+    says so, since the run's total is then lower than what it spent.
+    """
+    if usd_cost is None:
+        logger.warning(
+            "run %s: a turn had no price, so the run's spend leaves it out",
+            grant.run_id,
+        )
+        total: int = await store.spent_picodollars(grant.run_id)
+    else:
+        total = await store.add_spend(grant, usd_to_picodollars(Decimal(usd_cost)))
+    return RunGrantSpend(
+        run_id=grant.run_id,
+        spent_usd=picodollars_to_usd(total),
+        spend_limit_usd=str(grant.spend_limit_usd),
+        expires_at=grant.expires_at_iso(),
     )
 
 

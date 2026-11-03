@@ -33,6 +33,7 @@ enforcement, and middleware stay in the library.
 | `POST /v1/completions` + `stream: true` | `send_prompt_streaming(...)` | Sync generator bridged to SSE via `StreamingResponse` in the threadpool. No PII redaction (library rule). No retries on streams (library rule). A fallback chain fails a stream over before its first chunk only; the `done` event names the model that served (see "Model fallback"). |
 | `POST /v1/structured` | `asend_structured_output(...)` | `data` is null on `length`/`refusal` finish reasons; surface `finish_reason` to the caller. `prompt_cache` maps to the library's `AIPromptCacheHint` keyword (2.30.0). |
 | `POST /v1/conversations/turn` | `asend_conversation(...)` | Stateless: the caller sends the full history each turn and runs tools itself (ADR-0018 in the library repo). Before library 2.26.1, google-genai's own validator rejected a string `content`, so a Gemini caller got a 500 from this endpoint and from `/v1/structured`. 2.26.1 made the documented `{role, content}` history work on Gemini. The handler passes `prompt_cache` as the `AIPromptCacheHint` keyword. The `conversation_token` holds the messages the serving engine's `extend_messages_with_turn` appends for the turn (v2), so replay splices in that engine's wire shape; see "Model fallback". From 2.28.0 the library refuses a forced `tool_choice` on Claude Opus 5.5 and Fable 5.1 with a bare `ValueError` before the network call. The handler matches that error by the library's wording and turns it into a 400. Any other `ValueError` stays a 500. |
+| `POST /v1/run-grants`, `GET` and `DELETE /v1/run-grants/{run_id}` | none | Service-owned; see "Run grants". Issuing resolves the pinned model through the client pool and refuses one without token rates. |
 | `POST /v1/embeddings` | `agenerate_embeddings` / `agenerate_embeddings_batch` | |
 | `POST /v1/tokens/count` | `count_tokens(...)` | Sync; threadpool. |
 | `GET /v1/models` | `list_model_names` + `capabilities` + pricing registry | Read-only registry data: context windows, rates, lifecycle status, replacements. From library 2.26.1, `list_model_names` on Gemini queries the live catalog and can block and sleep, so the handler runs it in the threadpool. The library caches the answer per client for 15 minutes, so the pool holds one answer per engine, not one per request. |
@@ -304,6 +305,85 @@ This is not a user identity system. Keys name calling applications, and the
 service stores no per-key state beyond the label. Per-user identity, quotas,
 and per-caller rate limits belong behind a real identity provider.
 
+## Run grants
+
+Implemented in `run_grants.py` (the store), `routes_run_grants.py` (issue,
+read, revoke) and the conversation route (pin and spend). The meta-harness
+runs an agent in a sandbox, and the agent's model calls come here. Handing the
+sandbox an API key would give the agent every model, unlimited spend and no
+end date. A **run grant** narrows that to one run.
+
+A grant is a record in Redis: `run_id`, the issuer's key label, the pinned
+engine and model, `spend_limit_usd`, `expires_at`, and the attribution fields
+for the run's cost events. The issuer calls `POST /v1/run-grants` with its API
+key and gets a **grant key** (`rg_` plus 32 random bytes, URL-safe base64).
+The grant key carries no data; it is the lookup key for the record. The
+sandbox presents it as its bearer.
+
+| Key | Holds |
+|---|---|
+| `<prefix>grant:<run_id>` | The grant, as JSON |
+| `<prefix>grant-key:<sha256>` | The run id a grant key belongs to |
+| `<prefix>grant-keys:<run_id>` | The digests of the grant's keys, for revocation |
+| `<prefix>grant-spend:<run_id>` | Spend so far, in whole picodollars |
+
+Every key expires at the grant's `expires_at` (Redis `EXAT`), so an
+unrevoked grant cleans itself up.
+
+Decisions:
+
+- **Redis, and optional.** The service runs as several gunicorn workers and
+  Cloud Run instances, and a grant issued by one has to work on all of them.
+  Process memory cannot do that. Only a deployment that sets `HTTP_REDIS_URL`
+  connects; without it the grant endpoints answer 503 and nothing else
+  changes. A Redis that is down at startup is logged, and grant requests
+  answer 503 `run_grant_store_unavailable` until it returns. Requests with
+  API keys are unaffected.
+- **Hashed keys.** Redis holds the SHA-256 of each grant key, so a copy of
+  the keyspace holds nothing that authenticates. A grant key is 256 bits of
+  randomness, so an unsalted hash is enough.
+- **Opaque, not signed.** A signed token such as a JWT would carry the grant
+  itself, but the spend changes on every turn and must live on the server
+  anyway, and a signed token cannot be revoked without a server-side list.
+- **The authenticator resolves it.** `ApiKeyAuthMiddleware` sees the `rg_`
+  prefix, looks the key up, and allows only `POST /v1/conversations/turn`
+  (403 elsewhere). It sets the issuer's label as the request's key label and
+  puts the grant on `request.state.run_grant`. A grant key is checked even
+  when `HTTP_AUTH_DISABLED=1`, since its limits apply either way.
+- **The grant pins the model.** The turn route uses the grant's engine and
+  model and ignores the body's, so `engine` is optional on the turn request.
+  The body's `fallback` flag still applies, so a turn can fail over along the
+  deployment's chain. The model is resolved when the grant is issued, and a
+  model without token rates is refused, since its spend could not be counted.
+- **Spend is checked before the turn and counted after it.** A turn's cost
+  is known only once the provider answers. The route refuses a turn with 402
+  `run_grant_spend_limit` when the run's spend has reached the limit, and
+  otherwise adds the turn's `usd_cost` with `INCRBY`. A run can therefore pass
+  its limit by the turns in flight when it crossed. A cache hit adds zero. A
+  fallback turn on an unpriced model adds nothing and logs a warning. A turn
+  that fails after the provider billed it is not counted, because the service
+  never learns its cost.
+- **Exact money.** Spend is an integer count of picodollars, rounded up per
+  turn, so the total never drifts the way a float would.
+- **Retry-safe.** Asking again for a live `run_id` with the same issuer,
+  engine, model and limit returns a new key for the same grant, and the old
+  key keeps working. A caller whose first request timed out can retry without
+  breaking a sandbox that already holds a key. Other terms answer 409.
+  Revoking a grant that is gone answers 200 with `revoked: false`.
+- **The grant attributes the cost.** The caller-context middleware takes
+  `caller_id`, `session_id`, `workflow_id` and `tags` from the grant, adds a
+  `run_id` tag, and ignores the attribution headers. The sandbox sends the
+  request, and what it says about itself is not something the issuer vouched
+  for.
+- **Each run has its own rate-limit bucket** (`run:<run_id>`), so a fleet of
+  runs from one issuer does not share the issuer's budget. The spend limit
+  bounds each run's cost.
+
+Not built yet: the router's band. A request with a `route` hint on a grant
+would switch that call from the pinned model to a tier band capped at the
+pinned model's tier (meta-harness technical design, section 6). The service
+does not expose the router yet, so a grant only pins.
+
 ## Conversation `raw_content` round-trip
 
 `AITurnResult.raw_content` is opaque provider-SDK content the library needs
@@ -430,6 +510,11 @@ also serves the health body at `/health`, which Cloud Run does not reserve.
 Rate limiting depends on the deploy. The counter is per process, so the
 deploy target sets `WEB_CONCURRENCY=1` to keep the configured limit meaning
 what it says.
+
+Run grants need a Redis every instance can reach. On Google Cloud that is
+Memorystore for Redis on the service's VPC, with `HTTP_REDIS_URL` pointing
+at it. `make gcp-deploy` does not provision one; a deployment without it
+serves everything except `/v1/run-grants`.
 
 ## Cost attribution
 

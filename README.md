@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.17.1
+# ai-api-unified-http 1.18.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -158,6 +158,64 @@ limits â€” 200,000 characters for a prompt, 256 embedding inputs, 500 messages â
 are part of the published contract rather than deployment configuration, since
 the generated client is built from that document and would otherwise differ
 per deployment.
+
+### Run grants
+
+A run grant lets an agent make model calls for one run without holding an API
+key. The application that starts the run (the issuer) asks for a grant with
+its API key and gets back a **grant key**, which it hands to the agent. The
+grant key:
+
+- opens only `POST /v1/conversations/turn`; every other endpoint answers 403
+- runs every turn on the grant's engine and model, whatever the request body
+  names, so the body can leave `engine` and `model` out
+- stops working once the run has spent its `spend_limit_usd` (402
+  `run_grant_spend_limit`), when the grant expires, or when the issuer
+  revokes it (401)
+
+Grants need Redis, because the service runs as several processes and a grant
+issued by one must work on all of them. Set `HTTP_REDIS_URL`; without it the
+service runs as before and `/v1/run-grants` answers 503. `HTTP_REDIS_PREFIX`
+(default `ai-api-unified-http:`) namespaces the keys. Redis stores a hash of
+each grant key, never the key itself.
+
+```bash
+# The issuer asks for a grant. The response holds the grant key, once.
+curl -X POST http://localhost:8080/v1/run-grants \
+  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"run_id": "run-42", "engine": "claude", "model": "claude-haiku-4-5",
+       "spend_limit_usd": "0.50", "ttl_seconds": 900, "workflow_id": "task-42"}'
+
+# The agent makes turns with the grant key.
+curl -X POST http://localhost:8080/v1/conversations/turn \
+  -H "Authorization: Bearer $GRANT_KEY" -H 'content-type: application/json' \
+  -d '{"system_prompt": "Be brief.", "messages": [{"role": "user", "content": "hi"}]}'
+
+# The issuer reads the spend, then revokes the grant when the run ends.
+curl http://localhost:8080/v1/run-grants/run-42 -H "Authorization: Bearer $KEY"
+curl -X DELETE http://localhost:8080/v1/run-grants/run-42 -H "Authorization: Bearer $KEY"
+```
+
+Each turn response made with a grant key carries `run_grant`: the run's spend
+so far, this turn included, and its limit. The check runs before each turn,
+and a turn's cost is known only after it, so a run can pass its limit by the
+turns in flight when it crossed. A turn answered from the response cache adds
+nothing.
+
+More rules:
+
+- **Asking again for a live `run_id` with the same terms** returns a new key
+  for the same grant, and earlier keys keep working, so an issuer can retry
+  the request safely. Other terms or another issuer get 409.
+- **An issuer sees only its own grants.** Another key's grant answers 404.
+- **Revoking twice is fine.** The second answers 200 with `revoked: false`.
+- **The grant attributes the cost.** Its `caller_id`, `session_id`,
+  `workflow_id` and `tags` go on every cost event, with a `run_id` tag, and
+  the `X-Caller-Id`, `X-Session-Id` and `X-Workflow-Id` headers are ignored.
+- **Each run has its own request-rate budget**, so many runs from one issuer
+  do not share the issuer's.
+- **The model must have token pricing**, or the spend could not be counted,
+  and the grant request answers 400.
 
 ### Cost attribution per end user
 
@@ -484,7 +542,10 @@ standard runners on public repositories.
 |---|---|---|
 | POST | `/v1/completions` | Text completion; `"stream": true` for SSE |
 | POST | `/v1/structured` | Schema-validated structured output |
-| POST | `/v1/conversations/turn` | One stateless, tool-capable turn |
+| POST | `/v1/conversations/turn` | One stateless, tool-capable turn; also opened by a grant key |
+| POST | `/v1/run-grants` | Issue a run grant and its grant key |
+| GET | `/v1/run-grants/{run_id}` | A run grant and its spend |
+| DELETE | `/v1/run-grants/{run_id}` | Revoke a run grant and all its keys |
 | POST | `/v1/embeddings` | Embedding vectors |
 | POST | `/v1/tokens/count` | Provider-side token count |
 | GET | `/v1/models?engine=` | Model catalog: lifecycle and pricing |

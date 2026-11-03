@@ -305,7 +305,7 @@ class TestSurface:
         # endpoint that means holding a connection open for hours and losing
         # everything if it drops.
         paths = client.get("/openapi.json").json()["paths"]
-        assert not [p for p in paths if "run" in p]
+        assert not [p for p in paths if "batch" in p and "run" in p]
 
     def test_every_batch_path_is_documented(self, client: TestClient) -> None:
         paths = client.get("/openapi.json").json()["paths"]
