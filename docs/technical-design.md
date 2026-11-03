@@ -18,170 +18,173 @@ enforcement, and middleware stay in the library.
 
 ## Stack
 
-- **FastAPI** — Pydantic-native (the library's types are Pydantic, so route
-  schemas can wrap them), generates the OpenAPI spec the TypeScript client is
-  built from, and handles the library's mixed sync/async surface: async
-  routes await the library's `asend_*` coroutines; sync-only paths run in the
-  threadpool.
+- **FastAPI**: Pydantic-native, so route schemas can wrap the library's
+  Pydantic types. It generates the OpenAPI spec the TypeScript client is
+  built from. It also handles the library's mixed sync and async surface:
+  async routes await the library's `asend_*` coroutines, and sync-only paths
+  run in the threadpool.
 - **uvicorn** (dev) / gunicorn with uvicorn workers (production).
 
 ## Endpoint-to-library mapping
 
 | Endpoint | Library call | Notes |
 |---|---|---|
-| `POST /v1/completions` | `asend_prompt(...)` | True coroutine; handler awaits it. Attachments travel in `other_params`, which both this and the streaming call accept. The library owns which MIME types are acceptable and validates list alignment and size caps; the service classifies the type and translates the refusal into a 400 rather than keeping its own allowlist. `prompt_cache` travels in `other_params` too, so it reaches the streaming call as well; a request carrying only a cache hint still builds the parameters object. |
+| `POST /v1/completions` | `asend_prompt(...)` | True coroutine; handler awaits it. Attachments travel in `other_params`, which both this and the streaming call accept. The library decides which MIME types are acceptable and validates list alignment and size caps. The service classifies the type and turns the library's refusal into a 400, with no allowlist of its own. `prompt_cache` travels in `other_params` too, so it reaches the streaming call as well. A request with only a cache hint still builds the parameters object. |
 | `POST /v1/completions` + `stream: true` | `send_prompt_streaming(...)` | Sync generator bridged to SSE via `StreamingResponse` in the threadpool. No PII redaction (library rule). No retries on streams (library rule). A fallback chain fails a stream over before its first chunk only; the `done` event names the model that served (see "Model fallback"). |
 | `POST /v1/structured` | `asend_structured_output(...)` | `data` is null on `length`/`refusal` finish reasons; surface `finish_reason` to the caller. `prompt_cache` maps to the library's `AIPromptCacheHint` keyword (2.30.0). |
-| `POST /v1/conversations/turn` | `asend_conversation(...)` | Stateless; caller sends full history each turn and executes tools itself (ADR-0018 in the library repo). Library 2.26.1 made the documented `{role, content}` history work on Gemini, which had rejected a string `content` in google-genai's own validator, so a Gemini caller got a 500 from this endpoint and from `/v1/structured`. `prompt_cache` is passed as the `AIPromptCacheHint` keyword. The `conversation_token` holds what the serving engine's `extend_messages_with_turn` appends for the turn (v2), so replay splices in that engine's wire shape; see "Model fallback". From 2.28.0 the library refuses a forced `tool_choice` on Claude Opus 5.5 and Fable 5.1 with a bare `ValueError` before the network call; the handler turns that one, matched by the library's wording, into a 400 and lets any other `ValueError` stay a 500. |
+| `POST /v1/conversations/turn` | `asend_conversation(...)` | Stateless: the caller sends the full history each turn and runs tools itself (ADR-0018 in the library repo). Before library 2.26.1, google-genai's own validator rejected a string `content`, so a Gemini caller got a 500 from this endpoint and from `/v1/structured`. 2.26.1 made the documented `{role, content}` history work on Gemini. The handler passes `prompt_cache` as the `AIPromptCacheHint` keyword. The `conversation_token` holds the messages the serving engine's `extend_messages_with_turn` appends for the turn (v2), so replay splices in that engine's wire shape; see "Model fallback". From 2.28.0 the library refuses a forced `tool_choice` on Claude Opus 5.5 and Fable 5.1 with a bare `ValueError` before the network call. The handler matches that error by the library's wording and turns it into a 400. Any other `ValueError` stays a 500. |
 | `POST /v1/embeddings` | `agenerate_embeddings` / `agenerate_embeddings_batch` | |
 | `POST /v1/tokens/count` | `count_tokens(...)` | Sync; threadpool. |
-| `GET /v1/models` | `list_model_names` + `capabilities` + pricing registry | Read-only registry data: context windows, rates, lifecycle status, replacements. On Gemini `list_model_names` queries the live catalogue from library 2.26.1 and can block and sleep, which is why the handler runs it in the threadpool; the library caches the outcome per client for 15 minutes, so the pool holds one answer per engine rather than one per request. |
-| `POST /v1/batches` | `submit_batch(...)` | Sync; threadpool. Empty batches and duplicate `custom_id`s are refused as 400s here — the library raises `ValueError` for both, which would surface as 500s. |
-| `GET /v1/batches/{id}` | `get_batch(...)` | Sync; threadpool. `engine` is required on every batch call: a batch lives in one provider's account, so the id alone does not identify it. |
-| `GET /v1/batches/{id}/results` | `get_batch_results(...)` | Sync; threadpool. Correlate by `custom_id`; provider order is not request order. Results carry usage, including the cache reads and writes `AIBatchResultItem` reports from 2.30.0, but no `usd_cost` — the registry's token rates are interactive rates, and batch bills at the provider's batch rate. |
+| `GET /v1/models` | `list_model_names` + `capabilities` + pricing registry | Read-only registry data: context windows, rates, lifecycle status, replacements. From library 2.26.1, `list_model_names` on Gemini queries the live catalog and can block and sleep, so the handler runs it in the threadpool. The library caches the answer per client for 15 minutes, so the pool holds one answer per engine, not one per request. |
+| `POST /v1/batches` | `submit_batch(...)` | Sync; threadpool. Empty batches and duplicate `custom_id`s get 400s here. The library raises `ValueError` for both, which would surface as 500s. |
+| `GET /v1/batches/{id}` | `get_batch(...)` | Sync; threadpool. Every batch call requires `engine`: a batch lives in one provider's account, so the id alone does not identify it. |
+| `GET /v1/batches/{id}/results` | `get_batch_results(...)` | Sync; threadpool. Correlate by `custom_id`; provider order is not request order. Results include usage, with the cache reads and writes `AIBatchResultItem` reports from 2.30.0. They have no `usd_cost`: the registry's token rates are interactive rates, and batch bills at the provider's batch rate. |
 | `POST /v1/batches/{id}/cancel` | `cancel_batch(...)` | Sync; threadpool. Cancellation is a request; already-processed items stay billed. |
-| — | `run_batch(...)` | Deliberately unexposed: it blocks until the batch ends, which over HTTP is a connection held for hours that loses the work if it drops. |
-| `POST /v1/images` | `generate_images(...)` | Sync; threadpool. Bytes go to the artifact store and the response carries references, because base64 in JSON inflates by a third, caps at one buffer, and gives a caller no way to show progress or resume. |
-| `POST /v1/videos` | `submit_video_generation(...)` | Starts a worker-thread job and returns immediately. Generation outlives the request, so on Cloud Run this needs CPU allocated outside request processing. |
-| `GET /v1/videos/{id}` | `get_video_generation_job(...)` via the job record | Progress is read from the shared store, not from process memory: the instance polled is usually not the one working. |
-| `GET /v1/videos/{id}/events` | none | Service-owned. Emits progress on change and marks it `estimated` when no provider figure exists, so the feature does not depend on a provider reporting one. |
-| — | `AIFactory.get_ai_voice_client()` | Library 2.24.0 added this; voice was previously built through `AIVoiceFactory.create()` alone, which made it look unsupported to anyone reading the factory. |
-| `GET /v1/voices` | `list_available_voices`, `list_output_formats`, `common_vendor_capabilities` | Read from the client's own published fields, so a deployment that switches engines reports the truth without a code change. Paged at 200 with the true total returned, because one engine publishes thousands. |
-| `POST /v1/speech` | `text_to_voice(...)` / `text_to_voice_with_emotion_prompt(...)` | Sync; threadpool. Called with keywords only: the concrete providers narrow the base signature and make `voice` and `audio_format` required, where the base defaults both to None. Emotion and SSML are refused up front against the engine's published capabilities, since sending either to an engine without it is billed and silently ignored. |
-| `GET /v1/artifacts/{id}/content` | none | Service-owned. `Content-Length` is what a client builds a progress bar from; `Range` is what makes a failed transfer a re-download rather than a re-generation. |
+| — | `run_batch(...)` | Deliberately not exposed: it blocks until the batch ends. Over HTTP that is a connection held for hours, and the work is lost if the connection drops. |
+| `POST /v1/images` | `generate_images(...)` | Sync; threadpool. Bytes go to the artifact store and the response returns references. Base64 in JSON inflates the payload by a third, caps it at one buffer, and gives a caller no way to show progress or resume. |
+| `POST /v1/videos` | `submit_video_generation(...)` | Starts a worker-thread job and returns at once. Generation outlives the request, so on Cloud Run this needs CPU allocated outside request processing. |
+| `GET /v1/videos/{id}` | `get_video_generation_job(...)` via the job record | Progress comes from the shared store, not process memory: the instance a caller polls is usually not the one doing the work. |
+| `GET /v1/videos/{id}/events` | none | Service-owned. Emits progress when it changes, and marks it `estimated` when the provider reports no figure, so the feature works without provider progress reports. |
+| — | `AIFactory.get_ai_voice_client()` | Library 2.24.0 added this. Before, voice was built only through `AIVoiceFactory.create()`, so anyone reading the factory took voice to be unsupported. |
+| `GET /v1/voices` | `list_available_voices`, `list_output_formats`, `common_vendor_capabilities` | Read from the client's own published fields, so a deployment that switches engines reports the truth with no code change. Paged at 200 with the true total returned, because one engine publishes thousands. |
+| `POST /v1/speech` | `text_to_voice(...)` / `text_to_voice_with_emotion_prompt(...)` | Sync; threadpool. Called with keywords only. The concrete providers narrow the base signature and require `voice` and `audio_format`, which the base defaults to None. Emotion and SSML fail up front when the engine's published capabilities lack them, because an engine without them bills the call and silently ignores both. |
+| `GET /v1/artifacts/{id}/content` | none | Service-owned. A client builds a progress bar from `Content-Length`. With `Range`, a failed transfer costs only a re-download. |
 | `GET /healthz` | none | Reports service, API, and pinned library versions. |
 
 ## Client pool
 
-`AIFactory.get_*` constructs a new provider client per call, and each
-construction re-reads its configuration (`.env` and `models.json`) and, since
-library 3.6.0, probes the provider once to confirm the model is reachable
-(`model_check` in models.json; memoized per model and credential for the life
-of the process). The service therefore keeps a
-process-wide dict of engine clients keyed by `(engine, model)` (completions add
-whether the client carries the fallback chain; see "Model fallback"), built on first
-use and reused. Reuse is safe because engine instances hold no
+`AIFactory.get_*` constructs a new provider client per call. Each
+construction re-reads its configuration (`.env` and `models.json`). Since
+library 3.6.0 it also probes the provider once to confirm the model is
+reachable (`model_check` in models.json, memoized per model and credential
+for the life of the process). The service therefore keeps a process-wide
+dict of engine clients keyed by `(engine, model)`, built on first use and
+reused. Completions keys add whether the client holds the fallback chain;
+see "Model fallback". Reuse is safe: engine instances hold no
 per-conversation state, provider SDK clients are thread-safe, and the
 library's mutable instance attributes are idempotent lazy caches.
 
 Implemented in `clients.py`.
 
-- **`model=None` is its own pool entry**, distinct from any named model, even
+- **`model=None` is its own pool entry**, separate from any named model, even
   when the engine default resolves to that same model. The pool keys on the
   caller's request, before the engine resolves a default.
 - **Construction runs outside the lock.** Two requests racing on the same cold
-  key can both build a client, and the loser's copy is discarded. Holding the
-  lock across construction would serialize every cold start behind one Gemini
-  network round trip, and a duplicate build is harmless because the clients
-  carry no state worth preserving.
+  key can both build a client, and the pool discards the loser's copy.
+  Holding the lock across construction would put every cold start behind one
+  Gemini network round trip. A duplicate build is harmless because the
+  clients hold no state worth keeping.
 
 A construction failure leaves the key cold, so a request that arrives after
-the misconfiguration is fixed succeeds without a restart.
+someone fixes the misconfiguration succeeds without a restart.
 
 
 ## Model fallback
 
-Library 2.32.0 added a fallback chain (pinned now at 3.22.0): `AIFactory.get_ai_completions_client`
-returns an `AiFallbackCompletions` wrapping the primary engine when
-`completions.fallbacks` in models.json (or a `fallbacks=` argument) names
-candidates, and a request whose failure carries a `fallback_reason` in
-`completions.fallback_on` is retried on the next one. The chain logic is
-entirely the library's. What the service owns is below.
+Library 2.32.0 added a fallback chain (pinned now at 3.22.0). When
+`completions.fallbacks` in models.json, or a `fallbacks=` argument, names
+candidates, `AIFactory.get_ai_completions_client` returns an
+`AiFallbackCompletions` that wraps the primary engine. A request that fails
+with a `fallback_reason` listed in `completions.fallback_on` retries on the
+next candidate. The chain logic is the library's. The service owns the parts
+below.
 
-**Which clients carry the chain.** The factory reads the setting whenever
-`fallbacks` is None, so leaving it to the factory would wrap every pooled
-client, including the ones batches, token counts, and the model catalogue use.
+**Which clients hold the chain.** The factory reads the setting whenever
+`fallbacks` is None. Left to the factory, every pooled client would get the
+chain, including the ones batches, token counts, and the model catalog use.
 The service always passes `fallbacks` explicitly: the parsed chain for the
-three generation routes, `[]` for everything else. The chain is read through
-the library's own settings resolver (`EnvSettings.get_setting`), which
-consults the process environment, then `.env`, then `completions.fallbacks`
-in models.json; reading `os.environ` directly, as the service did before
-models.json existed, would run a deployment that moved its chain there with
-no fallback at all. The completions pool key
-grows a third part, `(engine, model, fallback)`, because the wrapper and the
-plain engine are different objects. A candidate naming exactly the requested
-model is dropped from that request's chain, since retrying an overloaded model
-on itself spends a second call on the same failure. A request's
+three generation routes, `[]` for everything else. It reads the chain through
+the library's own settings resolver (`EnvSettings.get_setting`), which checks
+the process environment, then `.env`, then `completions.fallbacks` in
+models.json. Reading `os.environ` directly, as the service did before
+models.json existed, would leave a deployment that moved its chain there with
+no fallback at all. The completions pool key grows a third part,
+`(engine, model, fallback)`, because the wrapper and the plain engine are
+different objects. The service drops a candidate naming exactly the
+requested model from that request's chain, since retrying an overloaded
+model on itself spends a second call on the same failure. A request's
 `"fallback": false` selects the plain entry.
 
 **Which model served.** Responses report the engine and model that answered,
-not the ones requested, plus `served_by_fallback`. Every source is per call,
-because the wrapper's `last_route` is per-client state on a client every
-request shares: a stream, or a call that ran in the threadpool, can read it
-after another request has moved it.
+which can differ from the ones requested, plus `served_by_fallback`. Every
+source is per call. The wrapper's `last_route` is per-client state on a
+client every request shares, so a stream, or a call that ran in the
+threadpool, can read it after another request has moved it.
 
 - Conversation turns and structured calls read the route stamp the wrapper
   puts on `AITurnResult` and `AIStructuredOutputResult`.
-- A buffered text prompt is sent with `asend_prompt_with_result` (library
-  3.16.0), whose `AIPromptResult` carries the same `provider_engine` and
+- A buffered text prompt goes through `asend_prompt_with_result` (library
+  3.16.0). Its `AIPromptResult` has the same `provider_engine` and
   `model_name`, filled from the wrapper's per-call ledger.
 - A stream has no envelope. `streaming.py` opens the library's
-  `request_cost_scope` around the whole stream; the wrapper joins it, each
-  provider call made for the stream lands on it as a line item, and the
-  report that closes the scope names the call whose answer was returned
-  (`served_by_engine`, `served_by_model`). The scope lives in a ContextVar,
+  `request_cost_scope` around the whole stream, and the wrapper joins it.
+  Each provider call made for the stream lands on the scope as a line item.
+  The report that closes the scope names the call whose answer the stream
+  returned (`served_by_engine`, `served_by_model`). The scope lives in a ContextVar,
   which Starlette copies onto the threadpool worker for each step.
 
 `fallback.served_route` compares what the library reported with the chain's
-resolved primary; a plain client (no chain) can only have served itself,
+resolved primary. A plain client (no chain) can only have served itself,
 whatever it reports. Before 3.7.0 the service read the wrapper's
-`served_by_fallback` log record instead. That record is written only when a
-candidate fails during the call, and with cooldowns a request can start on a
-fallback because the primary is resting, with no failure and no record: the
-log-based service reported such a request as served by the primary. The
+`served_by_fallback` log record. The wrapper writes that record only when a
+candidate fails during the call. With cooldowns, a request can start on a
+fallback because the primary is resting, with no failure and no record, so
+the log-based service reported that request as served by the primary. The
 envelope and the scope cover both cases.
 
 `parse_fallback_candidates` and the provider registry's
-`get_ai_provider_spec` are public module-level names in the library, imported
-from their submodules because the package root does not re-export them.
+`get_ai_provider_spec` are public module-level names in the library. The
+service imports them from their submodules because the package root does not
+re-export them.
 
-**Cost.** The wrapper reports the primary's capabilities, pricing included, so
-`usd_cost` for a fallback-served call is priced at a plain pooled client for
-the fallback's engine and model. Cost events need nothing: each engine emits
-its own, so the sink already records the fallback's engine and model.
+**Cost.** The wrapper reports the primary's capabilities, pricing included.
+So the service prices `usd_cost` for a fallback-served call at a plain pooled
+client for the fallback's engine and model. Cost events need nothing: each
+engine emits its own, so the sink already records the fallback's engine and
+model.
 
 **Startup check.** The library validates fallback engine tokens when it builds
-a client, which here is the first request per pool key, so a typo would
-surface as failed requests on the first outage. `verify_fallback_config`
-runs at startup, checks every engine token against the provider registry and
-every reason against `AiFallbackReason`, refuses to start on either, and logs
-the chain.
+a client, which here is the first request per pool key. A typo would
+therefore surface as failed requests during the first outage.
+`verify_fallback_config` runs at startup. It checks every engine token
+against the provider registry and every reason against `AiFallbackReason`,
+refuses to start on either error, and logs the chain.
 
 **Conversation tokens (v2).** A v1 token held the turn's `raw_content`, and
-replay wrapped it as the content of the caller's assistant message. That is the
-Anthropic and Bedrock shape only: OpenAI's `raw_content` is a whole message and
-Gemini's a parts list, so neither ever replayed, and a conversation that failed
-over to OpenAI broke on its second turn. A v2 token holds the messages the
-serving engine's own `extend_messages_with_turn` appends for the turn (a
-fallback client routes that call by the turn's stamp), and replay splices them
-in place of the caller's message. A model without tool-use support refuses
-`extend_messages_with_turn`, and its turn is still encoded as v1. v1 tokens
-remain accepted.
+replay wrapped it as the content of the caller's assistant message. Only
+Anthropic and Bedrock use that shape. OpenAI's `raw_content` is a whole
+message and Gemini's is a parts list, so neither ever replayed, and a
+conversation that failed over to OpenAI broke on its second turn. A v2 token
+holds the messages the serving engine's own `extend_messages_with_turn`
+appends for the turn (a fallback client routes that call by the turn's
+stamp). Replay splices them in place of the caller's message. A model
+without tool-use support refuses `extend_messages_with_turn`, so the service
+still encodes its turn as v1. The service still accepts v1 tokens.
 
-**Library 2.33.0 to 2.35.0.** The service passes these through without
-logic of its own, beyond the error-body fields above:
+**Library 2.33.0 to 2.35.0.** The service passes these through with no logic
+of its own beyond the error-body fields above:
 
 - 2.33.0 adds `auth_rejected` to the default reasons and skips the rest of an
   account's candidates after an account-wide failure. The service's startup
   check and log line take the default set from the library, so they follow.
-- 2.34.0 adds an opt-in `timeout` reason. It only works with a short deadline
+- 2.34.0 adds an opt-in `timeout` reason. It works only with a short deadline
   and no SDK retries, so `/v1/structured` and `/v1/conversations/turn` take
   `retry_policy`, sent as the library's reserved `provider_options` key. The
-  text-prompt calls have no per-call retry setting in the library, so
+  library has no per-call retry setting for text-prompt calls, so
   `/v1/completions` relies on the deployment's `completions.retry_policy`.
-  The field is not offered there, because a per-request value it ignored
-  would be worse than none.
-- 2.35.0 lets a turn whose history is engine-shaped fail over within that
-  engine family. Nothing changes here: the route stamp already names the
-  model that served, and `served_by_fallback` compares it with the requested
-  primary, so an Opus turn served by Sonnet reports Sonnet and prices at it.
+  That route does not offer the field, because a per-request value the
+  library ignored would be worse than none.
+- 2.35.0 lets a turn with engine-shaped history fail over within that engine
+  family. Nothing changes here. The route stamp already names the model that
+  served, and `served_by_fallback` compares it with the requested primary, so
+  an Opus turn served by Sonnet reports Sonnet and prices at it.
 
-**Library 3.0.0 to 3.22.0.** One pin step, taken in service 1.13.0. What the
-service adopted:
+**Library 3.0.0 to 3.22.0.** One pin step, taken in service 1.13.0. The
+service adopted these changes:
 
 - 3.2.0 and 3.11.0 move every model selection and the middleware profile into
   `models.json`. The service ships `config/models.json` and defaults
-  `AI_MODELS_CONFIG` to it (`cost.apply_default_models_config`), in place of
+  `AI_MODELS_CONFIG` to it (`cost.apply_default_models_config`), replacing
   the middleware YAML and `AI_MIDDLEWARE_CONFIG_PATH`. The deprecated
   environment keys still win over the file, with a warning.
 - 3.5.0 turns thinking on at `medium` by default. The three generation routes
@@ -191,100 +194,101 @@ service adopted:
   (above), which 3.16.0's envelope and the request cost scope replaced.
 - 3.16.0 and 3.17.0 fill engine, model, usage, and cost on every result, so
   `/v1/completions` now reports `usage` and `usd_cost`.
-- 3.18.0 raises `AiProviderRequestError` for media failures. The service's
-  own classification of unwrapped SDK errors (1.6.1) stays as the backstop.
+- 3.18.0 raises `AiProviderRequestError` for media failures. The service
+  still classifies unwrapped SDK errors itself (1.6.1) as the backstop.
 
 Not exposed yet: the complexity router and route preview (3.0.0, 3.15.0),
 per-call model pins (3.16.0), classification as a capability, cost
 attribution by `tenant` and `purpose` (3.14.0), and the per-environment
-overlay beyond passing `AI_MODELS_ENV` through. Each is a request-schema
-change of its own.
+overlay beyond passing `AI_MODELS_ENV` through. Each needs its own
+request-schema change.
 
 **Library 3.23.0 and 3.24.0.** 3.23.0 (service 1.14.0) adds the response
 cache, on in the shipped profile, with `cache_hit` and `usd_saved` on the
 generation responses and two admin endpoints. 3.24.0 (service 1.15.0) adds
 guardrails, off in the shipped profile. A blocking check raises
-`AiGuardrailBlockedError`, which is an `AiProviderError` but not an
-`AiProviderRequestError`: it carries no `fallback_reason`, no chain moves
-it, and without its own handler it would fall through to the base's 502.
-`errors.py` maps it to 422 `guardrail_blocked` with `guardrail_check` and
-`guardrail_direction` on the body, with the detail built from the
-exception's fields rather than its message so the checked text has no path
-into a response or a log line. A flagging check puts its name in
-`guardrail_flags` on every result envelope, which the three generation
-responses copy. A stream runs the input checks only, and where the block
+`AiGuardrailBlockedError`. It is an `AiProviderError` but not an
+`AiProviderRequestError`: it has no `fallback_reason`, no chain moves it, and
+without its own handler it would fall through to the base's 502. `errors.py`
+maps it to 422 `guardrail_blocked` with `guardrail_check` and
+`guardrail_direction` on the body. The handler builds the detail from the
+exception's fields and never from its message, so the checked text has no
+path into a response or a log line. A flagging check puts its name in
+`guardrail_flags` on every result envelope, and the three generation
+responses copy it. A stream runs the input checks only, and where the block
 surfaces depends on the pooled client. The library wraps an engine's
 `send_prompt_streaming` so the check runs when the route opens the stream,
 before `StreamingResponse` exists, and the block is the ordinary 422. A
-fallback chain opens each candidate's stream inside its own generator, so the
-check runs at the first `next()`, inside the SSE bridge after the 200 is
-committed; `streaming.py` reports it as an `error` event carrying
+fallback chain opens each candidate's stream inside its own generator. There
+the check runs at the first `next()`, inside the SSE bridge after the 200 is
+committed, and `streaming.py` reports it as an `error` event with
 `guardrail_blocked` and the same fields.
 
 **Library 3.25.0 and 3.26.0.** One pin step, service 1.16.0. 3.25.0 adds
 four moderation backends for the guardrail checks (Mistral, Azure Content
 Safety, Bedrock Guardrails, Google Cloud Natural Language), chosen by
-`backend` or by `auto` in a fixed order; the service passes them through,
-ships only `settings.backends.timeout_seconds`, and leaves the provider
-blocks out, since a `guardrail_id` or an endpoint changes what `auto` picks.
-3.26.0 stops reporting a construction-time configuration error as an
-unsupported engine and raises `AiProviderConfigurationValueError` with the
-provider's message: see "Error mapping".
+`backend` or by `auto` in a fixed order. The service passes them through and
+ships only `settings.backends.timeout_seconds`. It leaves the provider blocks
+out, since a `guardrail_id` or an endpoint changes what `auto` picks. 3.26.0
+stops reporting a construction-time configuration error as an unsupported
+engine. It raises `AiProviderConfigurationValueError` with the provider's
+message instead: see "Error mapping".
 
 **Library 3.26.1 through 3.28.0.** One pin step, service 1.17.0. 3.26.1
-and 3.27.0 change only Google service-account (Vertex) auth: the key file
-named in `.env` is loaded, and the location defaults to `global`. The
-service authenticates Google with an API key, so neither reaches it. 3.28.0
-gives `prompt_injection` a separate pass over tool results: each new one
-in a conversation is judged alone, as data that should hold no
-instructions for the assistant, and the library recognizes tool results by
-each engine's own shape, which is what callers already send in
-`messages`. `AiGuardrailBlockedError` gains `source` and `tool_call_ids`,
-and `AITurnResult` gains `guardrail_flagged_tool_calls`. The service copies
-them onto the 422 body (`guardrail_source`, `guardrail_tool_call_ids`), the
+and 3.27.0 change only Google service-account (Vertex) auth: the library
+loads the key file named in `.env`, and the location defaults to `global`.
+The service authenticates Google with an API key, so neither reaches it.
+3.28.0 gives `prompt_injection` a separate pass over tool results. It judges
+each new tool result in a conversation alone, as data that should hold no
+instructions for the assistant. The library recognizes tool results by each
+engine's own shape, which callers already send in `messages`.
+`AiGuardrailBlockedError` gains `source` and `tool_call_ids`, and
+`AITurnResult` gains `guardrail_flagged_tool_calls`. The service copies them
+onto the 422 body (`guardrail_source`, `guardrail_tool_call_ids`), the
 stream's `error` event, and the turn response. The ids are the caller's own
-identifiers, not checked text, so they keep the rule that no checked text
-reaches a response or a log line.
+identifiers and hold no checked text, so they keep the rule that no checked
+text reaches a response or a log line.
 
-**Library 3.29.0 and 3.29.1.** One pin step, service 1.17.1. 3.29.1 is the
-reason for the step. Gemini tool-use turns failed with a 500 after Gemini
-had billed them, because the library kept each part's `thought_signature`
-as raw bytes and the response cache's JSON dump raised on them. The library
-now stores the signature as base64 text, which google-genai decodes on
-replay, and its cache skips a result it cannot store instead of raising.
-3.29.0 adds the harness result contract (`RUN_FAILED`, `exception.cost`,
-reported costs, `route_confidence`), which the service does not expose yet.
+**Library 3.29.0 and 3.29.1.** One pin step, service 1.17.1, taken for
+3.29.1. On 3.28.0, Gemini tool-use turns failed with a 500 after Gemini had
+billed them. The library kept each part's `thought_signature` as raw bytes,
+and the response cache's JSON dump raised on them. 3.29.1 stores the
+signature as base64 text, which google-genai decodes on replay. Its cache
+also skips a result it cannot store and returns the result. 3.29.0 adds the
+harness result contract (`RUN_FAILED`, `exception.cost`, reported costs,
+`route_confidence`). The service does not expose it yet.
 
-**Why 2.32.1 was required.** On 2.32.0 a turn that failed over from Claude to
-OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
-`{"role": "assistant", "content": "...", "annotations": []}`, the wrapper read
-that history as provider-neutral and started the next turn at Claude, and
-Anthropic rejected the `annotations` key with a 400, which is not a fallback
-reason (ai-api-unified#65). 2.32.1 saves a text-only turn as plain
-`{"role", "content"}` and recognizes OpenAI SDK fields as OpenAI history.
-Checked live on 2.32.1: the second turn after a failover is answered, and an
-OpenAI turn replays on a healthy Claude. The service does not rewrite
-engine-shaped messages itself; replay shape stays the library's.
+**Why the service needed 2.32.1.** On 2.32.0 a turn that failed over from
+Claude to OpenAI broke the next turn. The OpenAI engine saved a text-only
+turn as `{"role": "assistant", "content": "...", "annotations": []}`. The
+wrapper read that history as provider-neutral and started the next turn at
+Claude. Anthropic rejected the `annotations` key with a 400, which is not a
+fallback reason (ai-api-unified#65). 2.32.1 saves a text-only turn as plain
+`{"role", "content"}` and recognizes OpenAI SDK fields as OpenAI history. A
+live check on 2.32.1 confirmed it: the second turn after a failover gets an
+answer, and an OpenAI turn replays on a healthy Claude. The service does not
+rewrite engine-shaped messages itself; replay shape stays the library's.
 
 ## Authentication
 
 Implemented in `auth.py`. Provider credentials live only in the service
 environment, so every accepted request spends money the caller never had to
-hold a key for. That inverts the usual risk: an unauthenticated endpoint here
-is an open tab.
+hold a key for. An unauthenticated endpoint here lets anyone who reaches it
+spend the service's provider credit.
 
-A shared secret in `Authorization: Bearer <key>`, configured through
-`HTTP_API_KEYS` as comma-separated `label:key` entries. Several keys are live
-at once so a caller can be rotated or revoked alone, and the label names the
-calling application in logs. The label authenticates nothing.
+Callers send a shared secret in `Authorization: Bearer <key>`, configured
+through `HTTP_API_KEYS` as comma-separated `label:key` entries. Several keys
+can be live at once, so a caller can be rotated or revoked alone, and the
+label names the calling application in logs. The label authenticates
+nothing.
 
-- **Enforced as middleware.** A new route is protected the moment it exists,
-  so adding an endpoint cannot quietly expose paid capacity by forgetting a
-  decorator. A test asserts every `/v1` path in the OpenAPI spec
-  answers 401 without a key.
+- **Enforced as middleware.** Middleware protects a new route the moment it
+  exists, so adding an endpoint cannot quietly expose paid capacity through a
+  forgotten decorator. A test asserts that every `/v1` path in the OpenAPI
+  spec answers 401 without a key.
 - **CORS wraps auth.** Starlette runs the last-added middleware outermost, so
-  CORS is registered after auth. A 401 carries CORS headers, which is what
-  lets a browser caller read the body explaining that the key was missing.
+  the app registers CORS after auth. A 401 has CORS headers, so a browser
+  caller can read the body that explains the missing key.
 - **`OPTIONS` is never gated.** Browsers do not attach `Authorization` to a
   preflight, so gating it would make every cross-origin call fail before it
   could authenticate.
@@ -292,9 +296,9 @@ calling application in logs. The label authenticates nothing.
   so the time taken does not depend on how far the key matched.
 
 Startup raises `AuthNotConfiguredError` when no keys are set and no explicit
-opt-out was given. The failure this prevents is a deployment that never set
-keys and therefore serves paid endpoints to anyone who can reach the port. `HTTP_AUTH_DISABLED=1` is the deliberate opt-out and logs a warning
-on every start.
+opt-out was given. This stops a deployment that never set keys from serving
+paid endpoints to anyone who can reach the port. `HTTP_AUTH_DISABLED=1` is
+the deliberate opt-out and logs a warning on every start.
 
 This is not a user identity system. Keys name calling applications, and the
 service stores no per-key state beyond the label. Per-user identity, quotas,
@@ -304,52 +308,53 @@ and per-caller rate limits belong behind a real identity provider.
 
 `AITurnResult.raw_content` is opaque provider-SDK content the library needs
 back verbatim on the next turn. The service serializes it into an opaque
-string token in the turn response; clients store and echo it untouched. The
-token's encoding is a service implementation detail and may change between
-service versions — clients must never parse it.
+string token in the turn response, and clients store and echo it untouched.
+The token's encoding is internal to the service and may change between
+service versions. Clients must never parse it.
 
 Implemented in `conversation_token.py` as `v1.<base64(compact JSON)>`.
 
-It is deliberately **neither signed nor encrypted**. The content is the
-caller's own conversation replayed back to them, so there is nothing there
-they did not already send or receive. Signing would add key management and
-rotation for no confidentiality gain, and the service still treats a decoded
-token as untrusted input.
+The token is **neither signed nor encrypted**, by design. The content is the
+caller's own conversation replayed back to them, so it holds nothing they did
+not already send or receive. Signing would add key management and rotation
+for no confidentiality gain, and the service still treats a decoded token as
+untrusted input.
 
-The version prefix makes an outdated token fail cleanly: when the encoding
-changes, an old token is rejected with a message telling the caller to start a
-new conversation, instead of reaching a provider as malformed content.
-Decoding happens before the client pool is touched, so a bad token costs no
-provider call.
+The version prefix makes an outdated token fail cleanly. When the encoding
+changes, the service rejects an old token with a message telling the caller
+to start a new conversation, so the token never reaches a provider as
+malformed content. Decoding happens before the service touches the client
+pool, so a bad token costs no provider call.
 
-Tokens are decoded **in place**, wherever the caller put them: an assistant
-message whose content matches `v<digits>.` is expanded to the provider content
-it encodes. The service does not append the previous turn itself, because it
-cannot know where a new user message belongs relative to it — appending would
-turn `[user, assistant, user]` into `[user, user, assistant]` and reorder the
-conversation. Any version-shaped prefix counts as a token attempt, so a token
-from a retired version is rejected with the same clear message.
+Tokens are decoded **in place**, wherever the caller put them: the service
+expands an assistant message whose content matches `v<digits>.` to the
+provider content it encodes. The service does not append the previous turn
+itself, because it cannot know where a new user message belongs relative to
+it. Appending would turn `[user, assistant, user]` into
+`[user, user, assistant]` and reorder the conversation. Any version-shaped
+prefix counts as a token attempt, so the service rejects a token from a
+retired version with the same clear message.
 
 ## Middleware profile
 
-The library reads one process-wide middleware list: the `middleware` section
-of models.json, or, when the deprecated `AI_MIDDLEWARE_CONFIG_PATH` is set, a
-YAML profile, which wins. The service ships the list inside
-`config/models.json` and defaults `AI_MODELS_CONFIG` to that file when unset,
-so a stock deployment starts with observability and cost emission already on.
-`verify_cost_capture` reads the library's resolved settings, so it checks
-whichever source the library is using.
+The library reads one process-wide middleware list. It comes from the
+`middleware` section of models.json, or from a YAML profile when the
+deprecated `AI_MIDDLEWARE_CONFIG_PATH` is set, which wins. The service ships
+the list inside `config/models.json` and defaults `AI_MODELS_CONFIG` to that
+file when unset, so a stock deployment starts with observability and cost
+emission already on. `verify_cost_capture` reads the library's resolved
+settings, so it checks whichever source the library is using.
 
 PII redaction is off in that profile. The library refuses to stream while
-redaction is enabled, because redaction cannot be guaranteed across chunk
-boundaries, and the profile is process-wide with no per-call override — so a
+redaction is on, because redaction cannot be guaranteed across chunk
+boundaries. The profile is process-wide with no per-call override, so a
 deployment gets one or the other. The default keeps the whole documented
 surface working.
 
 | `pii_redaction.enabled` | Buffered | Streaming |
 |---|---|---|
 | `false` (shipped default) | works | works |
-| `true` | works, redacted | 400 carrying the library's explanation |
+| `true` | works, redacted | 400 with the library's explanation |
 
 Deployments handling personal data set the flag and accept that streaming
 stops. The choice belongs to whoever configures the deployment, which is why
@@ -358,35 +363,36 @@ it is a profile setting.
 ## Cost-event capture
 
 The library emits one structured log record per call (event type
-`ai_api_call_cost`) on the logger named by its `emit_cost_topic` setting
+`ai_api_call_cost`) on the logger its `emit_cost_topic` setting names
 (default `ai_api_unified.observability.cost`). At startup the service
 attaches a handler to that topic. The service ships a JSON-lines file
-handler; the destination is expected to become a metrics pipeline. Streaming calls
-emit their cost event when the stream ends, including client-abandoned
-streams (the library handles `GeneratorExit`).
+handler; the destination should become a metrics pipeline. Streaming calls
+emit their cost event when the stream ends, including streams the client
+abandoned (the library handles `GeneratorExit`).
 
 Implemented in `cost.py`, attached and verified by the app lifespan.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HTTP_COST_LOG_PATH` | `cost-events.jsonl` | Sink file; parent directories are created |
-| `HTTP_COST_TOPIC` | `ai_api_unified.observability.cost` | Logger to attach to; set it when the library's `emit_cost_topic` is retuned |
+| `HTTP_COST_LOG_PATH` | `cost-events.jsonl` | Sink file; startup creates parent directories |
+| `HTTP_COST_TOPIC` | `ai_api_unified.observability.cost` | Logger to attach to; set it when a deployment changes the library's `emit_cost_topic` |
 
 Startup attaches the handler, then calls `verify_cost_capture()`, which raises
 `CostEventNotCapturedError` when the topic has no handler. The check also
-catches a deployment that retuned the library's `emit_cost_topic` without
-telling the service, where capture would attach to a topic nothing publishes
-to and every event would vanish. There is no opt-out, because hard
+catches a deployment that changed the library's `emit_cost_topic` without
+telling the service. There, capture would attach to a topic nothing
+publishes to, and every event would vanish. There is no opt-out, because hard
 requirement 3 admits none.
 
 - **Unknown fields pass through.** Every non-standard attribute on the log
-  record is carried into the JSON object; there is no allowlist to update, so
-  a field the library adds later survives with no change here.
+  record goes into the JSON object. With no allowlist to
+  update, a field the library adds later survives with no change here.
 - **The topic records at `INFO` regardless of the root logger.** A deployment
-  running the root at `WARNING` must not thereby drop every cost event.
-- **A failing sink never raises into the request.** Write errors route
-  through the logging error path, so a broken sink costs one event rather
-  than the call that produced it.
+  running the root at `WARNING` must not drop every cost event as a side
+  effect.
+- **A failing sink never raises into the request.** Write errors go through
+  the logging error path, so a broken sink costs one event and never the call
+  that produced it.
 
 ## API versioning
 
@@ -396,33 +402,32 @@ requirement 3 admits none.
 - **Service version** (semver): moves with ordinary releases, reported by
   `/healthz` and the OpenAPI document. See the README for the release process
   and the current value.
-- The pinned library version is independent of both and reported by
-  `/healthz` so operators can correlate service behavior with library
-  releases.
+- The pinned library version is independent of both. `/healthz` reports it so
+  operators can correlate service behavior with library releases.
 
 ## Deployment
 
 The service ships as a container. `Dockerfile` builds a virtualenv in a builder
-stage and copies it into a slim runtime that carries no build toolchain, no
-Poetry, and no source for the tests or docs. It runs gunicorn with uvicorn
-workers, as the stack section describes, and listens on `PORT`.
+stage and copies it into a slim runtime with no build toolchain, no Poetry,
+and no source for the tests or docs. It runs gunicorn with uvicorn workers, as
+the stack section describes, and listens on `PORT`.
 
-`.dockerignore` is load-bearing rather than tidiness. `docker build` ships the
-whole directory as build context and `.gitignore` does not apply to it, so
-without the exclusion a `.env` would land in an image layer readable by anyone
-who can pull the image.
+`.dockerignore` keeps `.env` out of the image. `docker build` ships the whole
+directory as build context, and `.gitignore` does not apply to it. Without the
+exclusion, a `.env` would land in an image layer that anyone who can pull the
+image can read.
 
 Cloud Run is the configured target. `make gcp-secrets` writes provider keys to
-Secret Manager and grants the runtime service account access; `make gcp-deploy`
-builds with Cloud Build, so no local Docker daemon is involved. Secrets mount
-at runtime, so no key appears in the image or in the service's stored
+Secret Manager and grants the runtime service account access. `make gcp-deploy`
+builds with Cloud Build, so no local Docker daemon is needed. Secrets mount at
+runtime, so no key appears in the image or in the service's stored
 environment.
 
 One Cloud Run behavior shapes the code: **its frontend answers `/healthz`
 itself and never forwards the request to the container.** The service therefore
-serves the same health body at `/health`, which Cloud Run does not reserve.
+also serves the health body at `/health`, which Cloud Run does not reserve.
 
-Rate limiting is sized against the deploy: the counter is per process, so the
+Rate limiting depends on the deploy. The counter is per process, so the
 deploy target sets `WEB_CONCURRENCY=1` to keep the configured limit meaning
 what it says.
 
@@ -430,23 +435,23 @@ what it says.
 
 `caller_context.py` puts caller identifiers into the library's observability
 context for the life of a request, so the library stamps them onto the cost
-event it emits. Without it every event carries the library's default caller and
+event it emits. Without it, every event has the library's default caller, and
 a deployment serving many users sees one total.
 
-The API key's label namespaces the caller id, because two applications
-numbering their users from one would otherwise collide and the combined spend
-would land on whichever the reader assumed.
+The API key's label namespaces the caller id. Two applications that number
+their users from one would otherwise collide, and the combined spend would
+land on whichever application the reader assumed.
 
-`session_id` and `workflow_id` are passed twice: once as context fields, and
-again as tags. The cost event carries a fixed field set that includes
-`caller_id` and neither of the others, while tags are emitted on cost events as
-`tag_<name>`. Passing them only as context fields attributes spend to a user
-but leaves the session invisible in the record that bills.
+The service passes `session_id` and `workflow_id` twice: once as context
+fields, and again as tags. The cost event has a fixed field set that includes
+`caller_id` and neither of the others, while the library emits tags on cost
+events as `tag_<name>`. Passing them only as context fields attributes spend
+to a user but leaves the session out of the record that bills.
 
-The context lives in a contextvar and is reset in a `finally`, so a worker
-thread cannot carry one request's caller into the next. It propagates into the
-threadpool, which matters because the sync library calls are the ones emitting
-cost events for token counting and model listing.
+The context lives in a contextvar, and a `finally` resets it, so a worker
+thread cannot pass one request's caller into the next. It propagates into the
+threadpool. That matters because the sync library calls emit the cost events
+for token counting and model listing.
 
 Identifiers are length-bounded and stripped of control characters. They reach
 log lines and cost records, so a newline would let a caller forge an entry.
@@ -455,46 +460,45 @@ log lines and cost records, so a newline would let a caller forge an entry.
 
 `config.py` loads `.env` into `os.environ` at startup, and real environment
 variables win over the file. `cost.apply_default_models_config` then points
-`AI_MODELS_CONFIG` at `config/models.json` when the variable is unset; a
-deployment naming its own file, or setting the variable blank to run without
-one, is left alone.
+`AI_MODELS_CONFIG` at `config/models.json` when the variable is unset. It
+leaves alone a deployment that names its own file, or sets the variable blank
+to run without one.
 
-The library reads `.env` for **its** settings on its own — `EnvSettings` is a
-pydantic-settings model declared with `env_file=".env"` — but that populates
-the model, not `os.environ`. The
-service's own variables (`HTTP_API_KEYS`, `HTTP_COST_LOG_PATH`,
-`HTTP_CORS_ORIGINS`, `LOG_LEVEL`) are read straight from `os.environ`, so
-without this load a `.env` holding `HTTP_API_KEYS` leaves the service with no
-keys configured at all.
+The library reads `.env` for **its** settings on its own: `EnvSettings` is a
+pydantic-settings model declared with `env_file=".env"`. That fills the model
+and leaves `os.environ` unchanged. The service reads its own variables
+(`HTTP_API_KEYS`, `HTTP_COST_LOG_PATH`, `HTTP_CORS_ORIGINS`, `LOG_LEVEL`)
+straight from `os.environ`. Without this load, a `.env` holding
+`HTTP_API_KEYS` leaves the service with no keys configured at all.
 
 ## Error mapping
 
-Implemented in `errors.py`. The governing question is whose fault the failure
-is: a caller who can fix the request gets a 4xx, and anything they cannot act
-on becomes a 5xx. Provider credentials live only in the service environment,
-so a provider auth rejection is a service misconfiguration reported with the
-provider's status code, and returning it verbatim would tell the caller to fix
-a key they do not hold.
+Implemented in `errors.py`. The rule is whose fault the failure is: a caller
+who can fix the request gets a 4xx, and anything they cannot act on becomes a
+5xx. Provider credentials live only in the service environment. So a
+provider auth rejection, which arrives with the provider's status code, is a
+service misconfiguration. Returning that status verbatim would tell the
+caller to fix a key they do not hold.
 
-`AiProviderRequestError` carries the provider's own `status_code` and
-`provider_engine`, so classification reads them directly instead of matching
+`AiProviderRequestError` has the provider's own `status_code` and
+`provider_engine`, so classification reads them directly and never matches
 message text.
 
 A client that cannot be built is the deployment's problem, so it is a 503
 `provider_not_configured`. The pool catches `ValueError` around construction
 and lifts the variable a provider's missing-key message names. Library
 3.26.0's `AiProviderConfigurationValueError` (a retired default model, a base
-URL that would send keys over plaintext) is a `ValueError` too, and takes
-the same 503, except that no variable is lifted: its message names the
-models.json field and the fix, and its first upper-case word is the
-deprecated environment key, which "set it" would wrongly advise. It also
-subclasses `AiProviderConfigurationError`, which answers 400 as the
-caller's fault, so it has its own handler, registered before its base, for
-the case where it escapes the pool. A fallback candidate that cannot be
-built never reaches either: the chain logs `candidate_unbuildable` and skips
-it. A request naming a retired model is also answered 503 on this path,
-although the caller could fix it, because the error does not say whether
-the model came from the request or the deployment.
+URL that would send keys over plaintext) is a `ValueError` too and takes the
+same 503, with no variable lifted. Its message names the models.json field
+and the fix, and its first upper-case word is the deprecated environment key,
+which "set it" would wrongly advise. It also subclasses
+`AiProviderConfigurationError`, which answers 400 as the caller's fault, so
+it has its own handler, registered before its base, for the case where it
+escapes the pool. A fallback candidate that cannot be built never reaches
+either: the chain logs `candidate_unbuildable` and skips it. A request naming
+a retired model also gets a 503 on this path, although the caller could fix
+it, because the error does not say whether the model came from the request
+or the deployment.
 
 | Library exception | Condition | HTTP status | `error` code |
 |---|---|---|---|
@@ -513,58 +517,59 @@ the model came from the request or the deployment.
 
 Every mapped failure returns the same body: `error`, `detail`, `engine`,
 `provider_status`, `fallback_reason` (the library's `AiFallbackReason`
-value from 2.31.0, or null), and `account_wide` (from 2.33.0: whether every
-model on that provider account would fail the same way; null when there is no
-reason, since the library's default then says nothing about the account).
+value from 2.31.0, or null), and `account_wide`. `account_wide` (from 2.33.0)
+says whether every model on that provider account would fail the same way.
+It is null when there is no reason, since the library's default then says
+nothing about the account.
 
-A timeout is split out from other status-less failures because 2.34.0 labels
-it. Before that, a client-side timeout and a refused connection were the same
-502. A 504 tells a caller the provider was slow rather than down, which is
-the signal for whether a longer `request_timeout_seconds` would help. `provider_status` is the provider's status when one was
-reported, and never equals the response status — a provider 500 surfaces as a
-502 here.
+The service splits a timeout out from other status-less failures because
+2.34.0 labels it. Before that, a client-side timeout and a refused connection
+were the same 502. A 504 tells a caller the provider was slow, not down,
+which shows whether a longer `request_timeout_seconds` would help.
+`provider_status` is the provider's status when it reported one, and never
+equals the response status: a provider 500 surfaces as a 502 here.
 
 - **`Retry-After` is not forwarded** on a 429. `AiProviderRequestError`
-  carries the status code and not the provider's response headers, so the
+  holds the status code but not the provider's response headers, so the
   service has no value to pass on. Callers back off on their own schedule.
 - **The token-limit 422 names the fix.** `StructuredResponseTokenLimitError`
   reports `minimum_supported_tokens` for the model, so the detail states the
-  floor rather than leaving the caller to bisect `max_response_tokens`.
+  floor and the caller need not bisect `max_response_tokens`.
 
-Handler registration order matters: every one of these inherits
-`AiProviderError`, so the base is registered last. Registering it first would
-collapse the whole table into one 502.
+Handler registration order matters. Every one of these inherits
+`AiProviderError`, so the app registers the base last. Registering it first
+would collapse the whole table into one 502.
 
 ### Failures outside the library's hierarchy
 
-Two failure classes fall outside the table above.
+These failures fall outside the table above.
 
 **Missing credentials.** Provider SDKs raise a plain `ValueError` naming the
-variable ("ANTHROPIC_API_KEY environment variable must be set"), which is not
-an `AiProviderError` and matches no handler. `clients.py` translates it at
+variable ("ANTHROPIC_API_KEY environment variable must be set"). It is not an
+`AiProviderError` and matches no handler. `clients.py` translates it at
 construction, where the engine is still known, into
 `ProviderNotConfiguredError` → **503**, with the variable name in the detail.
-503 rather than a 4xx because the caller did nothing wrong and retrying will
-not help until an operator acts.
+The status is 503 and not a 4xx because the caller did nothing wrong, and
+retrying will not help until an operator acts.
 
 **Everything else.** `ErrorEnvelopeMiddleware` converts any unhandled
 exception into the same JSON error shape with a 500. It runs inside CORS and
-outside the routes, so its responses carry CORS headers; Starlette's own
-server-error handler sits outside CORS, and a response from there reaches a
-browser with no `Access-Control-Allow-Origin` header and no readable reason.
-The body never carries the traceback. It carries a request id that is also
-written to the log line holding the traceback, so an operator can join the two
-without the caller seeing internals.
+outside the routes, so its responses have CORS headers. Starlette's own
+server-error handler sits outside CORS, and its responses reach a browser
+with no `Access-Control-Allow-Origin` header and no readable reason. The body
+never includes the traceback. It includes a request id that the service also
+writes to the log line holding the traceback, so an operator can join the two
+and the caller sees no internals.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| SSE ties one thread per active stream | Size threadpool x workers deliberately; pursue async streaming upstream in the library. |
+| SSE ties up one thread per active stream | Size threadpool x workers on purpose; pursue async streaming upstream in the library. |
 | Gemini client construction does a network call | Pool clients; construction failures surface at first use per (engine, model), not per request. |
 | Double retries (library + service) amplifying latency | The service adds no retry layer; retries stay library/SDK-owned. |
 | Cost events lost if the handler is misconfigured | Handler attachment is part of app startup; a startup check fails loudly if the topic has no handler. |
-| `raw_content` breaks across library upgrades | Token is versioned alongside the service; conversation turns are short-lived. |
+| `raw_content` breaks across library upgrades | Token versions follow the service; conversation turns are short-lived. |
 
 ## Future work
 
