@@ -246,6 +246,15 @@ stream's `error` event, and the turn response. The ids are the caller's own
 identifiers, not checked text, so they keep the rule that no checked text
 reaches a response or a log line.
 
+**Library 3.29.0 and 3.29.1.** One pin step, service 1.17.1. 3.29.1 is the
+reason for the step. Gemini tool-use turns failed with a 500 after Gemini
+had billed them, because the library kept each part's `thought_signature`
+as raw bytes and the response cache's JSON dump raised on them. The library
+now stores the signature as base64 text, which google-genai decodes on
+replay, and its cache skips a result it cannot store instead of raising.
+3.29.0 adds the harness result contract (`RUN_FAILED`, `exception.cost`,
+reported costs, `route_confidence`), which the service does not expose yet.
+
 **Why 2.32.1 was required.** On 2.32.0 a turn that failed over from Claude to
 OpenAI broke the next turn. The OpenAI engine saved a text-only turn as
 `{"role": "assistant", "content": "...", "annotations": []}`, the wrapper read
