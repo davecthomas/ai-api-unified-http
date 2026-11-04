@@ -541,7 +541,11 @@ class ConversationTurnRequest(EngineSelection):
             "the position it occurred: "
             '{"role": "assistant", "content": "<conversation_token>"}. '
             "Ordering is yours, because only you know where a new user "
-            "message belongs relative to it."
+            "message belongs relative to it. Answer each tool call with "
+            '{"type": "tool_result", "tool_call_id": "<tool call id>", '
+            '"result": {...}, "is_error": false} after that assistant '
+            "message. The service builds the serving engine's own tool-result "
+            "message from it, so the same shape works on every engine."
         ),
     )
     tools: list[ToolSchema] | None = None

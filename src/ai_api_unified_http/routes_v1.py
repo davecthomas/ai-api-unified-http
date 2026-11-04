@@ -122,6 +122,11 @@ from .streaming import (
     sse_from_sync_iterator,
     sse_job_progress,
 )
+from .tool_results import (
+    InvalidToolResultError,
+    shape_tool_results,
+    validate_tool_results,
+)
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -911,9 +916,10 @@ async def conversation_turn(
 
     try:
         messages: list[dict[str, Any]] = _expand_conversation_tokens(request.messages)
-    except InvalidConversationTokenError as error:
+        validate_tool_results(messages)
+    except (InvalidConversationTokenError, InvalidToolResultError) as error:
         # Caller-fixable, and it must fail before the pool is touched so a bad
-        # token costs no provider call.
+        # token or tool result costs no provider call.
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     store: RunGrantStore | None = None
@@ -927,6 +933,8 @@ async def conversation_turn(
             )
 
     client = get_completions_client(engine, model, fallback=request.fallback)
+    # Neutral tool results take the shape of the engine that serves the turn.
+    messages = shape_tool_results(client, messages)
     try:
         turn = await client.asend_conversation(
             request.system_prompt,
