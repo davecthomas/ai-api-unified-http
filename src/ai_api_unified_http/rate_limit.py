@@ -28,7 +28,7 @@ import os
 import threading
 import time
 from collections import defaultdict
-from typing import Final
+from typing import Any, Final
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -53,6 +53,7 @@ CLIENT_IP_FROM_XFF_ENV: Final[str] = "HTTP_CLIENT_IP_FROM_XFF"
 # Counter keys are namespaced so an address can never collide with an API key
 # label, which would let one caller spend the other's budget.
 _IP_KEY_PREFIX: Final[str] = "ip:"
+_RUN_KEY_PREFIX: Final[str] = "run:"
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -243,6 +244,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # here, so the fallback only covers a deployment running with
         # authentication disabled, where every caller shares one bucket.
         caller: str = getattr(request.state, "api_key_label", "anonymous")
+        # Each run counts on its own, so many runs from one issuer do not
+        # share the issuer's budget. The grant's spend limit bounds the run.
+        grant: Any = getattr(request.state, "run_grant", None)
+        if grant is not None:
+            caller = f"{_RUN_KEY_PREFIX}{grant.run_id}"
         window: int = window_seconds()
         allowed, remaining, resets_in = _counter.hit(caller, limit, window)
 

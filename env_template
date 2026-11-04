@@ -49,6 +49,13 @@ LOG_LEVEL=INFO
 # Unset leaves those endpoints answering 403.
 # HTTP_ADMIN_KEYS=ops:replace-with-a-generated-secret
 
+# --- Run grants (optional) ---
+# A Redis every worker and instance can reach turns on /v1/run-grants, which
+# issues grant keys limited to one run's model, spend and lifetime. Unset
+# leaves those endpoints answering 503 and changes nothing else.
+# HTTP_REDIS_URL=redis://localhost:6379/0
+# HTTP_REDIS_PREFIX=ai-api-unified-http:
+
 # --- Cost-event capture (required; the service refuses to start without it) ---
 # Every provider call emits a cost event, and every request emits one more
 # that totals its calls. The service attaches a handler to the library's cost

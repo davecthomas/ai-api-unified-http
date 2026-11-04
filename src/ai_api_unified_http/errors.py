@@ -41,6 +41,11 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
+from .run_grants import (
+    RunGrantConflictError,
+    RunGrantSpendLimitError,
+    RunGrantStoreUnavailableError,
+)
 from .schemas import ErrorResponse
 
 logger: Final[logging.Logger] = logging.getLogger(__name__)
@@ -364,6 +369,33 @@ async def handle_provider_configuration_value(
     )
 
 
+async def handle_run_grant_spend_limit(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Map a turn refused for its run's spend limit onto 402."""
+    assert isinstance(exc, RunGrantSpendLimitError)
+    logger.warning("run %s refused a turn: %s", exc.run_id, exc)
+    return _error_response(
+        status_code=402, error_code="run_grant_spend_limit", detail=str(exc)
+    )
+
+
+async def handle_run_grant_conflict(request: Request, exc: Exception) -> JSONResponse:
+    """Map a second grant request with different terms onto 409."""
+    return _error_response(
+        status_code=409, error_code="run_grant_conflict", detail=str(exc)
+    )
+
+
+async def handle_run_grant_store_unavailable(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Map an unreachable Redis onto 503. The store logged the cause."""
+    return _error_response(
+        status_code=503, error_code="run_grant_store_unavailable", detail=str(exc)
+    )
+
+
 async def handle_provider_error(request: Request, exc: Exception) -> JSONResponse:
     """Map any remaining library failure onto 502.
 
@@ -381,6 +413,9 @@ async def handle_provider_error(request: Request, exc: Exception) -> JSONRespons
 # Ordered most specific first. FastAPI dispatches on exact exception type and
 # walks the MRO, so the subclasses must be registered before their bases.
 EXCEPTION_HANDLERS: Final[list[tuple[type[Exception], object]]] = [
+    (RunGrantSpendLimitError, handle_run_grant_spend_limit),
+    (RunGrantConflictError, handle_run_grant_conflict),
+    (RunGrantStoreUnavailableError, handle_run_grant_store_unavailable),
     (ProviderNotConfiguredError, handle_provider_not_configured),
     (AiGuardrailBlockedError, handle_guardrail_blocked),
     (AiProviderRequestError, handle_provider_request_error),

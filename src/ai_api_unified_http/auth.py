@@ -20,6 +20,10 @@ Operator endpoints under `/v1/admin` take a separate key set,
 `HTTP_ADMIN_KEYS`, with the same `label:key` form. A client key never opens
 them, and with no admin keys configured they answer 403: the surface is off,
 not open.
+
+A grant key (`rg_...`, see run_grants.py) is the third kind of bearer. It is
+looked up in the run-grant store, and it opens only
+`POST /v1/conversations/turn`; anything else answers 403.
 """
 
 import hmac
@@ -38,6 +42,14 @@ from .rate_limit import (
     rate_limit,
     too_many_requests,
     window_seconds,
+)
+from .run_grants import (
+    GRANT_KEY_PATH,
+    RunGrant,
+    RunGrantStore,
+    RunGrantStoreUnavailableError,
+    looks_like_grant_key,
+    run_grant_store,
 )
 from .schemas import ErrorResponse
 
@@ -175,7 +187,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         """Authenticate the request, then pass it along."""
-        if auth_disabled() or request.url.path in PUBLIC_PATHS:
+        if request.url.path in PUBLIC_PATHS:
             return await call_next(request)
 
         # CORS preflight carries no Authorization header by design, so the
@@ -184,10 +196,23 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         header: str = request.headers.get("authorization", "")
-        if not header.startswith(_BEARER_PREFIX):
+        presented: str = (
+            header[len(_BEARER_PREFIX) :].strip()
+            if header.startswith(_BEARER_PREFIX)
+            else ""
+        )
+
+        # Checked before the opt-out: a grant key carries the run's model and
+        # spend limit, which apply whether or not API keys are required.
+        if looks_like_grant_key(presented):
+            return await _dispatch_grant_key(request, call_next, presented)
+
+        if auth_disabled():
+            return await call_next(request)
+
+        if not presented:
             return _refuse(request, "Missing bearer token.")
 
-        presented: str = header[len(_BEARER_PREFIX) :].strip()
         bool_admin: bool = request.url.path.startswith(ADMIN_PATH_PREFIX)
         if bool_admin:
             admin_keys: dict[str, str] = load_admin_keys()
@@ -212,6 +237,42 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         # itself is never stored on the request or written anywhere.
         request.state.api_key_label = label
         return await call_next(request)
+
+
+async def _dispatch_grant_key(
+    request: Request, call_next: RequestResponseEndpoint, grant_key: str
+) -> Response:
+    """Authenticate a grant key and attach its run grant to the request.
+
+    The issuer's label stands in for the API key label, so logs and cost
+    events name the application that issued the grant. The route reads
+    `request.state.run_grant` for the model and the spend limit.
+    """
+    store: RunGrantStore | None = run_grant_store(request.app)
+    if store is None:
+        return _refuse(request, "Run grants are not enabled on this deployment.")
+    try:
+        grant: RunGrant | None = await store.find(grant_key)
+    except RunGrantStoreUnavailableError as error:
+        body = ErrorResponse(error="run_grant_store_unavailable", detail=str(error))
+        return JSONResponse(status_code=503, content=body.model_dump())
+    if grant is None:
+        logger.warning(
+            "rejected request to %s: unknown, expired or revoked grant key",
+            request.url.path,
+        )
+        return _refuse(request, "Unknown, expired or revoked grant key.")
+    if request.method != "POST" or request.url.path != GRANT_KEY_PATH:
+        logger.warning(
+            "refused grant key for run %s on %s %s",
+            grant.run_id,
+            request.method,
+            request.url.path,
+        )
+        return _forbidden(f"A grant key opens only POST {GRANT_KEY_PATH}.")
+    request.state.api_key_label = grant.issuer
+    request.state.run_grant = grant
+    return await call_next(request)
 
 
 def _refuse(request: Request, detail: str) -> JSONResponse:

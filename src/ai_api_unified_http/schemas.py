@@ -8,6 +8,7 @@ from them, and the TypeScript client from that. Field names mirror the
 ai-api-unified call signatures they map onto (see docs/technical-design.md).
 """
 
+import re
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -359,6 +360,107 @@ class ToolCall(BaseModel):
     input: dict[str, Any]
 
 
+RUN_ID_PATTERN: Final[str] = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+USD_AMOUNT_PATTERN: Final[str] = r"^[0-9]{1,6}(\.[0-9]{1,12})?$"
+TAG_NAME_PATTERN: Final[str] = r"^[a-z][a-z0-9_]{0,31}$"
+MAX_GRANT_TAGS: Final[int] = 16
+MAX_GRANT_TTL_SECONDS: Final[int] = 24 * 60 * 60
+
+
+class RunGrantSpend(BaseModel):
+    """A run's spend against its grant, as of the response it rides on."""
+
+    run_id: str
+    spent_usd: str = Field(description="Spend so far, as an exact decimal string.")
+    spend_limit_usd: str
+    expires_at: str = Field(description="ISO 8601, UTC.")
+
+
+class RunGrantRequest(BaseModel):
+    """Ask for a run grant. The response carries the grant key for the sandbox."""
+
+    run_id: str = Field(
+        pattern=RUN_ID_PATTERN,
+        description=(
+            "The run this grant is for, chosen by the caller. Asking again for a "
+            "live run_id with the same terms returns a new key for the same grant."
+        ),
+    )
+    engine: str = Field(description="Completions engine every turn runs on.")
+    model: str | None = Field(
+        default=None,
+        description="Model every turn runs on; omit for the engine's default.",
+    )
+    spend_limit_usd: str = Field(
+        pattern=USD_AMOUNT_PATTERN,
+        description=(
+            "Turns are refused once the run has spent this much, as a decimal "
+            "string, e.g. '0.50'."
+        ),
+    )
+    ttl_seconds: int = Field(
+        default=3600,
+        ge=1,
+        le=MAX_GRANT_TTL_SECONDS,
+        description="Lifetime of the grant and its keys.",
+    )
+    caller_id: str | None = Field(
+        default=None,
+        description="Stamped on the run's cost events, in place of X-Caller-Id.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Stamped on the run's cost events, in place of X-Session-Id.",
+    )
+    workflow_id: str | None = Field(
+        default=None,
+        description="Stamped on the run's cost events, in place of X-Workflow-Id.",
+    )
+    tags: dict[str, str] = Field(
+        default_factory=dict,
+        max_length=MAX_GRANT_TAGS,
+        description="Extra tags on the run's cost events, emitted as tag_<name>.",
+    )
+
+    @field_validator("tags")
+    @classmethod
+    def _tag_names(cls, value: dict[str, str]) -> dict[str, str]:
+        for name in value:
+            if not re.match(TAG_NAME_PATTERN, name):
+                raise ValueError(f"tag name {name!r} must match {TAG_NAME_PATTERN}")
+        return value
+
+
+class RunGrantResponse(BaseModel):
+    """A run grant. `grant_key` is present only on the response that issued it."""
+
+    run_id: str
+    grant_key: str | None = Field(
+        default=None,
+        description=(
+            "Present once, on the response that issued it. Give it to the run as "
+            "its bearer key. The service keeps only a hash and cannot show it again."
+        ),
+    )
+    created: bool = Field(
+        default=False,
+        description="True when this call created the grant, false when it added a key.",
+    )
+    engine: str
+    model: str
+    spend_limit_usd: str
+    spent_usd: str
+    expires_at: str = Field(description="ISO 8601, UTC.")
+
+
+class RunGrantRevokeResponse(BaseModel):
+    run_id: str
+    revoked: bool = Field(
+        description="True when a live grant was ended, false when there was none."
+    )
+    spent_usd: str = Field(description="What the run spent, at revocation.")
+
+
 class ConversationTurnResponse(BaseModel):
     """One assistant turn.
 
@@ -402,6 +504,13 @@ class ConversationTurnResponse(BaseModel):
     served_by_fallback: bool = Field(
         default=False, description=SERVED_BY_FALLBACK_DESCRIPTION
     )
+    run_grant: RunGrantSpend | None = Field(
+        default=None,
+        description=(
+            "Present when the request used a grant key: the run's spend so far, "
+            "this turn included, and its limit."
+        ),
+    )
 
 
 class ToolSchema(BaseModel):
@@ -414,6 +523,14 @@ class ToolSchema(BaseModel):
 
 
 class ConversationTurnRequest(EngineSelection):
+    engine: str | None = Field(
+        default=None,
+        description=(
+            "Completions engine token, e.g. 'openai', 'claude', 'google-gemini'. "
+            "Required with an API key. With a grant key, the run grant names the "
+            "engine and model, and these two fields are ignored."
+        ),
+    )
     system_prompt: str = Field(max_length=MAX_SYSTEM_PROMPT_CHARS)
     messages: list[dict[str, Any]] = Field(
         max_length=MAX_CONVERSATION_MESSAGES,

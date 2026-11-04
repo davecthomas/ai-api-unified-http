@@ -10,6 +10,10 @@
       "description": "Optional. Keys for the operator endpoints under /v1/admin (response cache view and clear), as label:key. Unset leaves them answering 403.",
       "required": false
     },
+    "HTTP_REDIS_URL": {
+      "description": "Optional. A Redis every instance can reach (Memorystore on Google Cloud). Turns on /v1/run-grants; unset leaves those endpoints answering 503.",
+      "required": false
+    },
     "ANTHROPIC_API_KEY": {
       "description": "Anthropic key, for the 'claude' engine. Leave blank if unused.",
       "required": false

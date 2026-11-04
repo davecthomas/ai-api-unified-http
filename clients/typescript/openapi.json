@@ -864,9 +864,16 @@
       "ConversationTurnRequest": {
         "properties": {
           "engine": {
-            "description": "Completions engine token, e.g. 'openai', 'claude', 'google-gemini'.",
-            "title": "Engine",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Completions engine token, e.g. 'openai', 'claude', 'google-gemini'. Required with an API key. With a grant key, the run grant names the engine and model, and these two fields are ignored.",
+            "title": "Engine"
           },
           "fallback": {
             "default": true,
@@ -998,7 +1005,6 @@
           }
         },
         "required": [
-          "engine",
           "system_prompt",
           "messages"
         ],
@@ -1061,6 +1067,17 @@
               }
             ],
             "title": "Model"
+          },
+          "run_grant": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunGrantSpend"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when the request used a grant key: the run's spend so far, this turn included, and its limit."
           },
           "served_by_fallback": {
             "default": false,
@@ -1748,6 +1765,214 @@
           }
         },
         "title": "PromptCache",
+        "type": "object"
+      },
+      "RunGrantRequest": {
+        "description": "Ask for a run grant. The response carries the grant key for the sandbox.",
+        "properties": {
+          "caller_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Stamped on the run's cost events, in place of X-Caller-Id.",
+            "title": "Caller Id"
+          },
+          "engine": {
+            "description": "Completions engine every turn runs on.",
+            "title": "Engine",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model every turn runs on; omit for the engine's default.",
+            "title": "Model"
+          },
+          "run_id": {
+            "description": "The run this grant is for, chosen by the caller. Asking again for a live run_id with the same terms returns a new key for the same grant.",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Stamped on the run's cost events, in place of X-Session-Id.",
+            "title": "Session Id"
+          },
+          "spend_limit_usd": {
+            "description": "Turns are refused once the run has spent this much, as a decimal string, e.g. '0.50'.",
+            "pattern": "^[0-9]{1,6}(\\.[0-9]{1,12})?$",
+            "title": "Spend Limit Usd",
+            "type": "string"
+          },
+          "tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Extra tags on the run's cost events, emitted as tag_<name>.",
+            "maxProperties": 16,
+            "title": "Tags",
+            "type": "object"
+          },
+          "ttl_seconds": {
+            "default": 3600,
+            "description": "Lifetime of the grant and its keys.",
+            "maximum": 86400.0,
+            "minimum": 1.0,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          },
+          "workflow_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Stamped on the run's cost events, in place of X-Workflow-Id.",
+            "title": "Workflow Id"
+          }
+        },
+        "required": [
+          "run_id",
+          "engine",
+          "spend_limit_usd"
+        ],
+        "title": "RunGrantRequest",
+        "type": "object"
+      },
+      "RunGrantResponse": {
+        "description": "A run grant. `grant_key` is present only on the response that issued it.",
+        "properties": {
+          "created": {
+            "default": false,
+            "description": "True when this call created the grant, false when it added a key.",
+            "title": "Created",
+            "type": "boolean"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "ISO 8601, UTC.",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "grant_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present once, on the response that issued it. Give it to the run as its bearer key. The service keeps only a hash and cannot show it again.",
+            "title": "Grant Key"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "spend_limit_usd": {
+            "title": "Spend Limit Usd",
+            "type": "string"
+          },
+          "spent_usd": {
+            "title": "Spent Usd",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "engine",
+          "model",
+          "spend_limit_usd",
+          "spent_usd",
+          "expires_at"
+        ],
+        "title": "RunGrantResponse",
+        "type": "object"
+      },
+      "RunGrantRevokeResponse": {
+        "properties": {
+          "revoked": {
+            "description": "True when a live grant was ended, false when there was none.",
+            "title": "Revoked",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "spent_usd": {
+            "description": "What the run spent, at revocation.",
+            "title": "Spent Usd",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "revoked",
+          "spent_usd"
+        ],
+        "title": "RunGrantRevokeResponse",
+        "type": "object"
+      },
+      "RunGrantSpend": {
+        "description": "A run's spend against its grant, as of the response it rides on.",
+        "properties": {
+          "expires_at": {
+            "description": "ISO 8601, UTC.",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "spend_limit_usd": {
+            "title": "Spend Limit Usd",
+            "type": "string"
+          },
+          "spent_usd": {
+            "description": "Spend so far, as an exact decimal string.",
+            "title": "Spent Usd",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "spent_usd",
+          "spend_limit_usd",
+          "expires_at"
+        ],
+        "title": "RunGrantSpend",
         "type": "object"
       },
       "SpeechRequest": {
@@ -2726,7 +2951,7 @@
   "info": {
     "description": "HTTP interface to the ai-api-unified Python library. Breaking API changes bump the URI version (/v1 -> /v2); the service itself follows semantic versioning independently.",
     "title": "ai-api-unified-http",
-    "version": "1.17.1"
+    "version": "1.18.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3382,7 +3607,7 @@
     },
     "/v1/conversations/turn": {
       "post": {
-        "description": "Run one assistant turn; the caller owns history and tool execution.\n\nArgs:\n    request: System prompt, full history, optional tools, and the previous\n        turn's opaque token.\n\nReturns:\n    ConversationTurnResponse: The assistant turn, any tool calls the caller\n        must execute, and the token to echo back next turn.",
+        "description": "Run one assistant turn; the caller owns history and tool execution.\n\nWith a grant key, the run grant decides the engine and model, and the turn\nis refused with 402 once the run has spent its limit. The turn's cost is\nthen added to the run's spend.\n\nArgs:\n    http_request: The HTTP request, carrying the run grant when a grant\n        key authenticated it.\n    request: System prompt, full history, optional tools, and the previous\n        turn's opaque token.\n\nReturns:\n    ConversationTurnResponse: The assistant turn, any tool calls the caller\n        must execute, and the token to echo back next turn.",
         "operationId": "conversation_turn_v1_conversations_turn_post",
         "requestBody": {
           "content": {
@@ -3424,6 +3649,16 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Payment Required"
           },
           "422": {
             "content": {
@@ -3665,6 +3900,281 @@
           }
         },
         "summary": "Catalogued models with capabilities, pricing, and lifecycle"
+      }
+    },
+    "/v1/run-grants": {
+      "post": {
+        "description": "Issue a grant for one run, or a new key for a live grant with the same terms.",
+        "operationId": "issue_run_grant_v1_run_grants_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunGrantResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Issue a run grant and its key",
+        "tags": [
+          "run-grants"
+        ]
+      }
+    },
+    "/v1/run-grants/{run_id}": {
+      "delete": {
+        "description": "End the grant. Revoking one that is gone answers 200 with revoked false.\n\nA caller revokes on every end of a run, retries included, so a second\nrevoke must not fail.",
+        "operationId": "revoke_run_grant_v1_run_grants__run_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunGrantRevokeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Revoke a run grant and all its keys",
+        "tags": [
+          "run-grants"
+        ]
+      },
+      "get": {
+        "operationId": "get_run_grant_v1_run_grants__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunGrantResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "A run grant and its spend",
+        "tags": [
+          "run-grants"
+        ]
       }
     },
     "/v1/speech": {
