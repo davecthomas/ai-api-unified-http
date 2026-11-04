@@ -362,7 +362,13 @@ Decisions:
   its limit by the turns in flight when it crossed. A cache hit adds zero. A
   fallback turn on an unpriced model adds nothing and logs a warning. A turn
   that fails after the provider billed it is not counted, because the service
-  never learns its cost.
+  never learns its cost. A turn still running when its grant is revoked
+  finishes, since the service does not stop a provider call when the caller
+  goes away. Its cost lands after the revoke, so the revoke's `spent_usd`
+  leaves it out. Its cost event still carries the run's `run_id` tag, and the
+  spend key it writes expires at the grant's `expires_at`. The meta-harness
+  cancel demo shows this: the revoke reported $0 for a turn the provider
+  billed.
 - **Exact money.** Spend is an integer count of picodollars, rounded up per
   turn, so the total never drifts the way a float would.
 - **Retry-safe.** Asking again for a live `run_id` with the same issuer,
