@@ -421,6 +421,39 @@ it. Appending would turn `[user, assistant, user]` into
 prefix counts as a token attempt, so the service rejects a token from a
 retired version with the same clear message.
 
+## Neutral tool results
+
+A caller answers a tool call with one shape on every engine:
+`{"type": "tool_result", "tool_call_id", "result", "is_error"}`, where
+`result` is a JSON object. Implemented in `tool_results.py`. The service
+converts each one with the library's `build_tool_result_message` on the
+client that serves the turn, so callers carry no copy of each engine's
+format, and a library change to one reaches every caller.
+
+- **Which engine's shape.** A plain client builds its own. A fallback client
+  is also given the history before the result, and builds in the shape of
+  the engine that history came from, which is the engine the chain then
+  routes the turn to. A turn a fallback answered gets its results in that
+  fallback's shape.
+- **One message per turn where the engine wants it.** Consecutive neutral
+  results answer one assistant turn. Where the engine's result is a user
+  message holding a list (Claude `content`, Gemini `parts`), they are merged
+  into one message. Gemini rejects a turn whose function responses are split
+  across messages. OpenAI takes one message or item per result, so those
+  stay separate. A neutral result is never merged into a message the caller
+  built.
+- **Converted before the library sees the history.** The library reads any
+  message with a `type` and no `role` as an OpenAI Responses item, so an
+  unconverted neutral result would pin a fallback to the wrong engine. The
+  guardrail tool-result check then reads the converted message.
+- **Validated before the pool.** A malformed result is a 400 before the
+  service touches the client pool, like a bad conversation token, so it
+  costs no provider call. A model without tool use answers 400 through the
+  library's capability error.
+
+A result already in an engine's own shape passes through unchanged, so
+callers written before 1.19.0 keep working.
+
 ## Middleware profile
 
 The library reads one process-wide middleware list. It comes from the

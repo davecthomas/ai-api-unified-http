@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.18.0
+# ai-api-unified-http 1.19.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
@@ -331,9 +331,10 @@ every field.
   tool result in `messages` (one after the model's last turn) gets its own
   `prompt_injection` pass. A tool should return data, so text in it
   addressed to the assistant is suspect, while instructions meant for a
-  person (a recipe, a notice) pass. Tool results are recognized in the
-  shape each engine uses, the shape you already send them in (for Claude,
-  a `tool_result` block in a user message). `prompt_injection.tool_results`
+  person (a recipe, a notice) pass. Neutral `tool_result` messages (see
+  [Conversations are stateless](#conversations-are-stateless)) are checked
+  after the service converts them to the engine's shape, and results sent
+  in an engine's own shape are checked as sent. `prompt_injection.tool_results`
   sets their own `threshold` and `action`.
 
 A check that fires either **blocks** or **flags**, per `on_fail` or its own
@@ -1007,6 +1008,25 @@ relative to the previous assistant turn. Echo the token without parsing it: it
 carries provider-specific content whose shape changes with the engine and the
 library version. A token from a version the service no longer accepts is
 rejected with a 400.
+
+Answer a tool call with one message per result, after the assistant message
+that asked for it, in the same shape on every engine:
+
+```json
+{"messages": [
+  {"role": "user", "content": "read notes.txt"},
+  {"role": "assistant", "content": "v2.eyJtZXNzYWdl..."},
+  {"type": "tool_result", "tool_call_id": "toolu_01A", "result": {"output": "..."}, "is_error": false}
+]}
+```
+
+`tool_call_id` is the `id` of the tool call from the turn response, and
+`result` is any JSON object. From 1.19.0 the service builds the serving
+engine's own tool-result message from it. A turn a fallback answered gets its
+results in that fallback engine's shape, and results that answer one turn go
+to Claude and Gemini as one message, which Gemini requires. A tool result already in an engine's own shape still passes through
+unchanged. A malformed `tool_result` is answered with 400 before any provider
+call.
 
 From 1.11.0 the token holds the turn in the answering engine's own replay
 shape. Before that, an OpenAI or Gemini token could not be replayed at all:

@@ -1050,7 +1050,7 @@ export interface components {
             max_response_tokens?: number | null;
             /**
              * Messages
-             * @description Full conversation history; the service holds no state between turns. Replay a previous assistant turn by placing its conversation_token as the content of an assistant message, in the position it occurred: {"role": "assistant", "content": "<conversation_token>"}. Ordering is yours, because only you know where a new user message belongs relative to it.
+             * @description Full conversation history; the service holds no state between turns. Replay a previous assistant turn by placing its conversation_token as the content of an assistant message, in the position it occurred: {"role": "assistant", "content": "<conversation_token>"}. Ordering is yours, because only you know where a new user message belongs relative to it. Answer each tool call with {"type": "tool_result", "tool_call_id": "<tool call id>", "result": {...}, "is_error": false} after that assistant message. The service builds the serving engine's own tool-result message from it, so the same shape works on every engine.
              */
             messages: {
                 [key: string]: unknown;
