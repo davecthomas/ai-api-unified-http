@@ -259,6 +259,17 @@ also skips a result it cannot store and returns the result. 3.29.0 adds the
 harness result contract (`RUN_FAILED`, `exception.cost`, reported costs,
 `route_confidence`). The service does not expose it yet.
 
+**Library 3.30.0 and 3.31.0.** One pin step, service 1.20.0, taken for
+3.31.0. Its catalog adds the models the providers shipped by 2026-11-15:
+`claude-sonnet-5-5`, `claude-haiku-5-5` and `claude-fable-5-2`, `gpt-6.1-sol`
+and `gpt-6.1-terra`, and `gemini-4-carbon`, `gemini-4-argon` and
+`gemini-4-hydrogen`. Each has a context window and a price, so the context
+guard and the cost of a turn work for them. Without the entry a call to
+Sonnet 5.5 had no price and a call to Gemini 4 fell back to another model.
+The library's own defaults move to `gemini-3.8-flash`. 3.30.0 adds the
+classify-only router, which the service does not use. The service code is
+unchanged.
+
 **Why the service needed 2.32.1.** On 2.32.0 a turn that failed over from
 Claude to OpenAI broke the next turn. The OpenAI engine saved a text-only
 turn as `{"role": "assistant", "content": "...", "annotations": []}`. The
