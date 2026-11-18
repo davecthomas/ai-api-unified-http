@@ -1,4 +1,4 @@
-# ai-api-unified-http 1.19.0
+# ai-api-unified-http 1.20.0
 
 HTTP interface to the [ai-api-unified](https://github.com/davecthomas/ai-api-unified)
 Python library, for web apps and other non-Python consumers. One implementation
